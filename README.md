@@ -10,15 +10,24 @@ USB 行为来自对真实 PLIN-USB 盒子的 USBPcap 抓包与 PLinApi 调用逐
 - [x] M2 USB 复合设备：VID/PID `0C72:0011`，MI_00=CAN、MI_01=LIN，12 个 bulk 端点
 - [x] M3 PLIN 命令通道：`0x04/0x84` 命令、`0x18` 状态轮询、`0x85/0x86` 异步 RX 队列
 - [x] M4 LIN 主/从驱动：USART1(PA9/PA10)=LIN1、USART2(PA2/PA3)=LIN2，待接收发器验证
-- [ ] M5 与 PLIN-View Pro 联调
+- [ ] M5 与 PLIN-View Pro 联调：设备枚举、连接、初始化、帧表、调度、状态已通过；RX 报文投递待解决
+
+## 引脚分配
+
+| 功能 | 外设 | TX | RX | 备注 |
+|---|---|---|---|---|
+| LIN1 | USART1 | PA9 | PA10 | AF1，当前未接收发器 |
+| LIN2 | USART2 | PA2 | PA3 | AF1，当前未接收发器 |
+| CAN | bxCAN | PB9 | PB8 | 复用 pcan_cantact 板型 |
+| USB | USB FS | PA12 | PA11 | |
 
 ## 目标硬件
 
 - MCU：STM32F072C8/CB（USB FS + bxCAN + USART LIN）
 - 板型：基于 CANtact / CANable / Entrée 的 F072 派生板（`make usbcan_f072`）
-- 收发器：CAN 用 TJA1050/TJA1051；LIN 用 TJA1021/SN65HVDA195
+- 收发器：CAN 用 TJA1050/TJA1051；LIN 用 TJA1021/SN65HVDA195（主机端需 1 kΩ 终端电阻和 12 V VBAT）
 
-## 编译
+## 编译与下载
 
 需要 GNU Arm Embedded Toolchain：
 
@@ -28,12 +37,54 @@ make usbcan_f072
 
 产物在 `build-usbcan_f072/`：`.elf` / `.hex` / `.bin`。
 
+使用 WCH-Link/DAPLink 下载（Keil STM32F0xx DFP pack）：
+
+```powershell
+pyocd flash --pack "D:\work_space\mcu\stm32\.daplink_pack\Keil.STM32F0xx_DFP.2.1.0.pack" `
+  -t stm32f072cb build-usbcan_f072/pcan_usbcan_f072_hw.hex
+```
+
+烧录后设备会重新枚举；PLIN Manager 不会自动重新挂载，需要管理员权限重启一次：
+
+```powershell
+Restart-Service -Name 'PLIN Manager' -Force
+```
+
 ## 兼容性目标
 
 | 上位机 | 接口 | 状态 |
 |---|---|---|
-| PCAN-View | CAN (MI_00) | 沿用 pcan_cantact 实现 |
-| PLIN-View Pro 3.1.x | LIN (MI_01) | 开发中 |
+| PCAN-View | CAN (MI_00) | 不可用：仍是 PCAN-USB 的 SJA1000 协议，Pro FD 身份下驱动报错 10 |
+| PLIN-View Pro 3.1.x | LIN (MI_01) | 枚举/连接/初始化/帧表/调度/状态通过；RX 投递待解决 |
+
+## 已知问题 / 待办
+
+### 阻塞项
+
+- **PLIN RX 投递**：0x85 的 36 字节报文线上内容已正确（PID/长度/方向/数据/序号/时间戳），但当前
+  `PLinMng 3.0.0.219`（驱动 `1.7.0.1122`）不把报文投递给客户端；抓包文档环境是
+  `3.0.1.227 / 1.7.1.1147`，怀疑版本差异。需要真实 PLIN 盒子在当前环境抓一次 0x85 对比，或升级 PEAK 驱动。
+- **CAN / PCAN-View**：MI_00 仍是 PCAN-USB 的 SJA1000 协议；Pro FD 身份下驱动无法启动。
+  需要适配 Pro FD 的 CAN 协议，或重新考虑设备身份方案。
+
+### LIN / PLIN 功能
+
+- 未接 LIN 收发器，主/从实际总线收发未验证；主机端 1 kΩ 终端电阻和 12 V VBAT 未接。
+- `LIN_Write`（Simple Master）走 Data OUT 管道（`0x05/0x06`），当前固件未解析。
+- 仅支持单个调度表（忽略 scheduleIndex 0..7）；未实现 `GET_SLOT (0x13)`、`SET_SCHEDULE_BREAK (0x14)`。
+- 未实现：`START_AUTOBAUD (0x04)`、`SET_HW_NAME (0x09)`、KeepAlive（`0x0D`-`0x0F`）、
+  `GET_HARDWARE_VERSION (0x25)`、`GET_TARGET_TIME (0x26)`、`RESPONSE_REMAP` 生效、
+  `LEDS_ON_OFF (0x28)`、`BREAK_LEN (0x29)` / `TERMINATION (0x2A)`、高级从机/Flash 模式命令。
+- `SET_ID_FILTER` 只保存未生效；从机应答重映射未实现。
+- 错误位映射需修正：校验错误应为 `0x020`，当前从机路径用了 `0x004`；同步/奇偶校验未检查。
+- 时间戳用 1 ms tick ×1000，分辨率 1 ms；未使用硬件 µs 计时器。
+- 调试点 `plin_lin_debug` / `plin_proto_debug` 暂留，后续可移除或加宏开关。
+- F072 的 USB PMA 实际可用区约 `0x2FC`，EP3/EP6 OUT 与 EP2/EP5 共享缓冲；若后续使用 CAN2 需重新分配。
+
+### 工程
+
+- `.github/workflows` 只做编译，不检查 pack/烧录。
+- 授权提醒：PEAK 名称与协议仅用于兼容性研究，商用/量产前请确认授权。
 
 ## 参考与授权
 
