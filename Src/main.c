@@ -8,6 +8,7 @@
 #if PCAN_USE_PLIN
 #include "plin_protocol.h"
 #include "plin_lin.h"
+#include "plin_store.h"
 #endif
 
 void HAL_MspInit( void )
@@ -103,6 +104,7 @@ int main( void )
 #if PCAN_USE_PLIN
   plin_protocol_init();
   plin_lin_init();
+  plin_store_init();
 #endif
 
   pcan_led_set_mode( LED_CH0_RX, LED_MODE_BLINK_SLOW, 0 );

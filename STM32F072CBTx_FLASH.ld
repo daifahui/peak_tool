@@ -25,10 +25,11 @@ _Min_Heap_Size = 0x000;      /* required amount of heap  */
 _Min_Stack_Size = 0x200; /* required amount of stack */
 
 /* Specify the memory areas */
+/* 末尾 4 KB（0x0801F000-0x0801FFFF，2 个 2 KB 页）预留给 LIN 双调度表存储 */
 MEMORY
 {
 RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 16K
-FLASH (rx)     : ORIGIN = 0x8000000, LENGTH = 128K
+FLASH (rx)     : ORIGIN = 0x8000000, LENGTH = 124K
 }
 
 /* Define output sections */

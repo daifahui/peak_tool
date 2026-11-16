@@ -13,6 +13,21 @@
 #define PLIN_CHANNELS     2
 #define PLIN_RX_MSG_SIZE  36
 
+#define PLIN_MAX_FRAMES       64
+#define PLIN_MAX_SLOTS        8
+#define PLIN_FRAME_ENTRY_SIZE 16
+
+/* 一个通道的完整可持久化配置（帧表 + 调度槽 + 总线参数） */
+struct plin_config
+{
+  uint8_t  frames[PLIN_MAX_FRAMES][PLIN_FRAME_ENTRY_SIZE];
+  uint8_t  frame_valid[PLIN_MAX_FRAMES];
+  uint8_t  slots[PLIN_MAX_SLOTS][PLIN_FRAME_ENTRY_SIZE];
+  uint8_t  slot_count;
+  uint16_t baudrate;
+  uint8_t  mode;
+};
+
 /* 调试计数：[0]上报调用 [1]异步发送次数 [2]发送失败 [3]队列溢出 */
 extern volatile uint32_t plin_proto_debug[4];
 extern volatile uint8_t plin_proto_last_msg[PLIN_RX_MSG_SIZE];
@@ -28,3 +43,8 @@ void plin_protocol_report_msg( uint8_t channel, const uint8_t *msg, uint16_t siz
 int plin_protocol_get_frame( uint8_t channel, uint8_t id, uint8_t *entry );
 int plin_protocol_get_slot( uint8_t channel, uint8_t index, uint8_t *slot );
 uint8_t plin_protocol_get_slot_count( uint8_t channel );
+
+/* 配置导入/导出（供 Flash 调度表存储使用） */
+int plin_protocol_get_config( uint8_t channel, struct plin_config *cfg );
+int plin_protocol_set_config( uint8_t channel, const struct plin_config *cfg );
+void plin_protocol_set_schedule_active( uint8_t channel, uint8_t active );

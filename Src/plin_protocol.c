@@ -1,6 +1,7 @@
 #include <string.h>
 #include "plin_protocol.h"
 #include "plin_lin.h"
+#include "plin_store.h"
 #include "pcan_usb.h"
 #include "pcan_led.h"
 #include "usbd_core.h"
@@ -37,6 +38,11 @@ enum
   PLIN_CMD_RESPONSE_REMAP    = 0x27,
   PLIN_CMD_BREAK_LEN         = 0x29,
   PLIN_CMD_TERMINATION       = 0x2A,
+
+  /* 项目自定义命令：Flash 调度表存储/加载（PEAK 未占用 0x30-0x32） */
+  PLIN_CMD_STORE_SCHEDULE    = 0x30,
+  PLIN_CMD_LOAD_SCHEDULE     = 0x31,
+  PLIN_CMD_GET_SCHEDULE_INFO = 0x32,
 };
 
 enum
@@ -46,12 +52,7 @@ enum
   PLIN_MODE_MASTER = 2,
 };
 
-#define PLIN_MAX_FRAMES     64
-#define PLIN_MAX_SLOTS      8
-/* LIN 帧间隔最短 ~1 ms，32 条可吸收 ~30 ms 的 USB 抖动；
- * 2 通道共 2.3 KB RAM，F072 余量足够。 */
 #define PLIN_RX_QUEUE_LEN   32
-#define PLIN_FRAME_ENTRY_SIZE 16
 
 struct plin_frame_entry
 {
@@ -327,7 +328,7 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
         chan->slot_count = 0;
         chan->schedule_active = 0;
         memset( chan->slots, 0, sizeof( chan->slots ) );
-        plin_lin_set_active( channel, 0 );
+        plin_protocol_set_schedule_active( channel, 0 );
 
         memset( rsp, 0, sizeof( rsp ) );
         memcpy( rsp, buf, 8 );
@@ -347,7 +348,7 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       if( size >= 8 )
       {
         chan->schedule_active = 1;
-        plin_lin_set_active( channel, 1 );
+        plin_protocol_set_schedule_active( channel, 1 );
         plin_send_raw( buf, 8 );
       }
       break;
@@ -356,7 +357,7 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       if( size >= 12 )
       {
         chan->schedule_active = 0;
-        plin_lin_set_active( channel, 0 );
+        plin_protocol_set_schedule_active( channel, 0 );
         plin_send_raw( buf, 12 );
       }
       break;
@@ -416,6 +417,37 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       break;
     }
 
+    case PLIN_CMD_STORE_SCHEDULE:
+      if( size >= 6 )
+      {
+        uint8_t rsp[8] = { 0 };
+
+        memcpy( rsp, buf, 6 );
+        rsp[6] = ( plin_store_save( (uint8_t)( buf[4] & 0x01 ), buf[5] ? 1 : 0 ) == 0 ) ? 0 : 1;
+        plin_send_raw( rsp, sizeof( rsp ) );
+      }
+      break;
+
+    case PLIN_CMD_LOAD_SCHEDULE:
+      if( size >= 5 )
+      {
+        uint8_t rsp[8] = { 0 };
+
+        memcpy( rsp, buf, 5 );
+        rsp[6] = ( plin_store_load( (uint8_t)( buf[4] & 0x01 ), 1 ) == 0 ) ? 0 : 1;
+        plin_send_raw( rsp, sizeof( rsp ) );
+      }
+      break;
+
+    case PLIN_CMD_GET_SCHEDULE_INFO:
+    {
+      uint8_t info[8];
+
+      plin_store_info( info );
+      plin_reply( buf, info, sizeof( info ) );
+      break;
+    }
+
     case PLIN_CMD_XMT_WAKE_UP:
       plin_lin_send_wakeup( channel );
       break;
@@ -459,4 +491,57 @@ uint8_t plin_protocol_get_slot_count( uint8_t channel )
   if( channel >= PLIN_CHANNELS )
     return 0;
   return plin_channels[channel].slot_count;
+}
+
+int plin_protocol_get_config( uint8_t channel, struct plin_config *cfg )
+{
+  struct plin_channel *chan;
+
+  if( channel >= PLIN_CHANNELS || cfg == 0 )
+    return 0;
+
+  chan = &plin_channels[channel];
+
+  memcpy( cfg->frames, chan->frames, sizeof( cfg->frames ) );
+  memcpy( cfg->frame_valid, chan->frame_valid, sizeof( cfg->frame_valid ) );
+  memcpy( cfg->slots, chan->slots, sizeof( cfg->slots ) );
+  cfg->slot_count = chan->slot_count;
+  cfg->baudrate = chan->baudrate;
+  cfg->mode = chan->mode;
+
+  return 1;
+}
+
+int plin_protocol_set_config( uint8_t channel, const struct plin_config *cfg )
+{
+  struct plin_channel *chan;
+  uint8_t mode;
+  uint16_t baudrate;
+
+  if( channel >= PLIN_CHANNELS || cfg == 0 )
+    return 0;
+
+  chan = &plin_channels[channel];
+  mode = ( cfg->mode <= PLIN_MODE_MASTER ) ? cfg->mode : PLIN_MODE_NONE;
+  baudrate = cfg->baudrate;
+
+  memcpy( chan->frames, cfg->frames, sizeof( chan->frames ) );
+  memcpy( chan->frame_valid, cfg->frame_valid, sizeof( chan->frame_valid ) );
+  memcpy( chan->slots, cfg->slots, sizeof( chan->slots ) );
+  chan->slot_count = ( cfg->slot_count > PLIN_MAX_SLOTS ) ? PLIN_MAX_SLOTS : cfg->slot_count;
+  chan->baudrate = baudrate;
+  chan->mode = mode;
+  chan->schedule_active = 0;
+
+  plin_lin_set_config( channel, baudrate, mode );
+  return 1;
+}
+
+void plin_protocol_set_schedule_active( uint8_t channel, uint8_t active )
+{
+  if( channel >= PLIN_CHANNELS )
+    return;
+
+  plin_channels[channel].schedule_active = active ? 1 : 0;
+  plin_lin_set_active( channel, active ? 1 : 0 );
 }

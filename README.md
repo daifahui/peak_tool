@@ -74,6 +74,17 @@ Restart-Service -Name 'PLIN Manager' -Force
 - LIN→USB 上报走每通道 32 条 × 36 字节的异步队列，USB IN 提交失败时保留队首重试，队列满只累加溢出计数。
 - 时间戳使用 TIM2 1 MHz 计数器（见下）。
 
+### Flash 离线调度表
+
+- 链接脚本把末尾 4 KB（`0x0801F000`–`0x0801FFFF`，2 个 2 KB 页）留给调度表，每通道一页。
+- 单表有效载荷 1184 B（表头 32 B + 64 帧 × 16 B + 8 槽 × 16 B），2 KB 页余量约 40%，空间足够。
+- 表头含 magic/version/波特率/模式/帧数/有效位图/autostart，整表 CRC32 校验；掉电写入半途的表会被判为无效。
+- 上电时 `plin_store_init()` 自动校验并把有效表载入对应通道；`autostart=1` 的表立即启动调度，无需上位机。
+- 自定义命令（PEAK 未占用区间）：
+  - `0x30 STORE_SCHEDULE`：`+4`=表号(0/1)，`+5`=autostart，保存当前通道配置。
+  - `0x31 LOAD_SCHEDULE`：`+4`=表号，载入并立即启动。
+  - `0x32 GET_SCHEDULE_INFO`：返回 8 字节 `[valid0][valid1][auto0][auto1][mode0][mode1][slots0][slots1]`。
+
 ## 已知问题 / 待办
 
 ### 阻塞项
