@@ -201,6 +201,16 @@ static uint8_t *peak_ep_out_buffer( uint8_t epnum )
   }
 }
 
+static uint16_t peak_ep_out_size( uint8_t epnum )
+{
+#if PCAN_USE_PLIN
+  /* LIN 数据 OUT 只承载 36 字节消息，PMA 缓冲按 40 字节分配 */
+  if( epnum == PLIN_EP_DATA0OUT || epnum == PLIN_EP_DATA1OUT )
+    return PLIN_RX_MSG_SIZE;
+#endif
+  return PCAN_USB_EP_SIZE;
+}
+
 static void device_ep_list_set( USBD_HandleTypeDef *pdev,
                                 const USB_ENDPOINT_DESCRIPTOR *eps,
                                 uint8_t count, uint8_t open )
@@ -239,8 +249,8 @@ static uint8_t device_init( USBD_HandleTypeDef *pdev, uint8_t cfgidx )
 
   pdev->pClassData = (void*)&pcan_data;
 
-  /* 只接收实际使用的 OUT 端点：CAN 命令/数据、LIN 命令。
-   * EP3/0x05/0x06 OUT 不使用，避免共享 PMA 缓冲被意外写入。 */
+  /* 只接收实际使用的 OUT 端点：CAN 命令/数据、LIN 命令/数据。
+   * EP3 OUT 不使用，避免共享 PMA 缓冲被意外写入。 */
   {
     static const uint8_t out_eps[] =
     {
@@ -248,13 +258,16 @@ static uint8_t device_init( USBD_HandleTypeDef *pdev, uint8_t cfgidx )
       PCAN_USB_EP_MSGOUT,
 #if PCAN_USE_PLIN
       PLIN_EP_CMDOUT,
+      PLIN_EP_DATA0OUT,
+      PLIN_EP_DATA1OUT,
 #endif
     };
 
     for( uint8_t i = 0; i < sizeof( out_eps ); i++ )
     {
       USBD_LL_PrepareReceive( pdev, out_eps[i],
-                              peak_ep_out_buffer( out_eps[i] ), PCAN_USB_EP_SIZE );
+                              peak_ep_out_buffer( out_eps[i] ),
+                              peak_ep_out_size( out_eps[i] ) );
     }
   }
 
@@ -409,9 +422,15 @@ static uint8_t device_data_out( USBD_HandleTypeDef *pdev, uint8_t epnum )
     case PLIN_EP_CMDOUT:
       plin_protocol_process_command( pcan_data.buffer_lin_cmd, (uint16_t)size );
       break;
+    case PLIN_EP_DATA0OUT:
+      plin_protocol_process_data( 0, pcan_data.buffer_lin_data0, (uint16_t)size );
+      break;
+    case PLIN_EP_DATA1OUT:
+      plin_protocol_process_data( 1, pcan_data.buffer_lin_data1, (uint16_t)size );
+      break;
 #endif
     default:
-      /* 0x03/0x05/0x06 预留数据通道，丢弃 */
+      /* 0x03 预留数据通道，丢弃 */
       break;
   }
 
@@ -419,7 +438,7 @@ static uint8_t device_data_out( USBD_HandleTypeDef *pdev, uint8_t epnum )
   if( buffer == 0 )
     return USBD_FAIL;
 
-  USBD_LL_PrepareReceive( pdev, epnum, buffer, PCAN_USB_EP_SIZE );
+  USBD_LL_PrepareReceive( pdev, epnum, buffer, peak_ep_out_size( epnum ) );
   return USBD_OK;
 }
 

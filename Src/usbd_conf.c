@@ -123,7 +123,8 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
   }
 
   /* PMA 实际可用区约 0x2FC 字节：BTABLE 占 0x00-0x3F。
-   * 未使用的 EP3/EP6 OUT 与 EP2/EP5 共享缓冲，EP5/EP6 IN 仅需 40 字节（36 字节消息）。 */
+   * 未使用的 EP3/EP6 OUT 与 EP2/EP5 共享缓冲；
+   * LIN 数据 OUT 只承载 36 字节消息，缓冲按 40 字节分配。 */
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x00 , PCD_SNG_BUF, 0x40);
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x80 , PCD_SNG_BUF, 0x80);
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x01 , PCD_SNG_BUF, 0xC0);
@@ -136,7 +137,7 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x84 , PCD_SNG_BUF, 0x200);
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x05 , PCD_SNG_BUF, 0x290);
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x85 , PCD_SNG_BUF, 0x240);
-  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x06 , PCD_SNG_BUF, 0x290);
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x06 , PCD_SNG_BUF, 0x2B8);
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x86 , PCD_SNG_BUF, 0x268);
   
   return USBD_OK;

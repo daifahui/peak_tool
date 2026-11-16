@@ -72,6 +72,8 @@ Restart-Service -Name 'PLIN Manager' -Force
   主循环不再按字节忙等，USB 命令/数据通道始终有人服务。
 - LIN 接收由 RXNE 中断写入 128 字节环形缓冲，主循环解析；主机等待应答带超时窗口。
 - LIN→USB 上报走每通道 32 条 × 36 字节的异步队列，USB IN 提交失败时保留队首重试，队列满只累加溢出计数。
+- `LIN_Write` 支持：Data OUT `0x05/0x06` 的 36 字节消息解析后排队，主机模式下优先于周期调度立即发送；
+  从机模式下写入帧表，收到报头时用新数据应答。每通道 8 条写请求队列，满时淘汰最旧请求。
 - 时间戳使用 TIM2 1 MHz 计数器（见下）。
 
 ### Flash 离线调度表
@@ -98,8 +100,7 @@ Restart-Service -Name 'PLIN Manager' -Force
 ### LIN / PLIN 功能
 
 - 未接 LIN 收发器，主/从实际总线收发未验证；主机端 1 kΩ 终端电阻和 12 V VBAT 未接。
-- `LIN_Write`（Simple Master）走 Data OUT 管道（`0x05/0x06`），当前固件未解析。
-- 仅支持单个调度表（忽略 scheduleIndex 0..7）；未实现 `GET_SLOT (0x13)`、`SET_SCHEDULE_BREAK (0x14)`。
+- 当前仅支持单个调度表（忽略 scheduleIndex 0..7）；`GET_SLOT (0x13)` 已实现，`SET_SCHEDULE_BREAK (0x14)` 未实现。
 - 未实现：`START_AUTOBAUD (0x04)`、`SET_HW_NAME (0x09)`、KeepAlive（`0x0D`-`0x0F`）、
   `GET_HARDWARE_VERSION (0x25)`、`GET_TARGET_TIME (0x26)`、`RESPONSE_REMAP` 生效、
   `LEDS_ON_OFF (0x28)`、`BREAK_LEN (0x29)` / `TERMINATION (0x2A)`、高级从机/Flash 模式命令。

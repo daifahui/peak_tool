@@ -7,6 +7,16 @@
 
 #define LIN_RX_RING_SIZE  128
 #define LIN_RX_RING_MASK  ( LIN_RX_RING_SIZE - 1 )
+#define LIN_TXQ_LEN       8
+
+struct lin_tx_request
+{
+  uint8_t pid;
+  uint8_t length;
+  uint8_t direction;
+  uint8_t checksum_type;
+  uint8_t data[8];
+};
 
 enum
 {
@@ -48,6 +58,11 @@ struct lin_channel
   uint8_t  tx_buf[16];
   uint8_t  tx_len;
   uint8_t  tx_pos;
+
+  /* LIN_Write 立即发送请求队列 */
+  struct lin_tx_request txq[LIN_TXQ_LEN];
+  volatile uint8_t txq_head;
+  volatile uint8_t txq_tail;
 
   /* 当前帧上下文 */
   uint8_t  phase;
@@ -220,6 +235,53 @@ static void lin_frame_done( struct lin_channel *chan )
 
 /* ---- 主机调度 ---------------------------------------------------------- */
 
+/* LIN_Write 立即发送：宿主直接下发一帧，不依赖调度表 */
+static void lin_master_write( struct lin_channel *chan )
+{
+  struct lin_tx_request *req = &chan->txq[chan->txq_tail];
+  uint8_t id = (uint8_t)( req->pid & 0x3F );
+  uint8_t length = req->length;
+  uint8_t checksum = 0;
+
+  chan->txq_tail = (uint8_t)( ( chan->txq_tail + 1 ) % LIN_TXQ_LEN );
+
+  if( length > 8 )
+    length = 8;
+
+  chan->frame_id = id;
+  chan->frame_pid = req->pid;
+  chan->frame_len = length;
+  chan->frame_dir = req->direction;
+  chan->frame_cs = req->checksum_type;
+  chan->frame_error = 0;
+  chan->frame_report = 0;
+  chan->rx_expected = 0;
+  chan->rx_count = 0;
+
+  lin_flush_rx( chan );
+
+  chan->tx_buf[0] = 0x55;
+  chan->tx_buf[1] = req->pid;
+
+  if( req->direction == 1 )
+  {
+    checksum = lin_checksum( id, req->pid, req->checksum_type, req->data, length );
+    memcpy( &chan->tx_buf[2], req->data, length );
+    chan->tx_buf[2 + length] = checksum;
+    chan->tx_len = (uint8_t)( 3 + length );
+    chan->frame_report = 1;
+  }
+  else
+  {
+    /* direction>=2：只发报头并接收应答 */
+    chan->tx_len = 2;
+    chan->rx_expected = (uint8_t)( length + 1 );
+  }
+
+  lin_tx_start( chan, 1 );
+  chan->phase = LIN_PHASE_TX;
+}
+
 static void lin_master_start( struct lin_channel *chan )
 {
   uint8_t channel = (uint8_t)( chan - lin_channels );
@@ -366,6 +428,13 @@ static void lin_master_poll( struct lin_channel *chan )
 
   if( chan->phase != LIN_PHASE_IDLE )
     return;
+
+  /* LIN_Write 优先于周期调度，保证立即发送 */
+  if( chan->txq_head != chan->txq_tail )
+  {
+    lin_master_write( chan );
+    return;
+  }
 
   if( (int32_t)( HAL_GetTick() - chan->next_slot_ms ) < 0 )
     return;
@@ -556,6 +625,8 @@ void plin_lin_init( void )
     chan->next_slot_ms = 0;
     chan->parse_state = LIN_PARSE_WAIT_BREAK;
     chan->sequence = 0;
+    chan->txq_head = 0;
+    chan->txq_tail = 0;
     lin_usart_config( chan, 19200 );
   }
 }
@@ -577,6 +648,8 @@ void plin_lin_set_config( uint8_t channel, uint16_t baudrate, uint8_t mode )
   chan->phase = LIN_PHASE_IDLE;
   chan->sequence = 0;
   chan->parse_state = LIN_PARSE_WAIT_BREAK;
+  chan->txq_head = 0;
+  chan->txq_tail = 0;
   lin_usart_config( chan, baudrate );
 }
 
@@ -612,6 +685,38 @@ void plin_lin_send_wakeup( uint8_t channel )
 
   lin_tx_start( chan, 1 );
   chan->phase = LIN_PHASE_TX;
+}
+
+void plin_lin_write( uint8_t channel, uint8_t pid, uint8_t length, uint8_t direction,
+                     uint8_t checksum_type, const uint8_t *data )
+{
+  struct lin_channel *chan;
+  struct lin_tx_request *req;
+  uint8_t next;
+
+  if( channel >= 2 || data == 0 )
+    return;
+
+  chan = &lin_channels[channel];
+  if( chan->mode != PLIN_LIN_MODE_MASTER )
+    return;   /* 从机数据已写入帧表，等主机报头 */
+
+  next = (uint8_t)( ( chan->txq_head + 1 ) % LIN_TXQ_LEN );
+  if( next == chan->txq_tail )
+  {
+    /* 队列满时丢弃最旧请求，保留最新写入 */
+    chan->txq_tail = (uint8_t)( ( chan->txq_tail + 1 ) % LIN_TXQ_LEN );
+    plin_lin_debug[2]++;
+  }
+
+  req = &chan->txq[chan->txq_head];
+  req->pid = pid;
+  req->length = ( length > 8 ) ? 8 : length;
+  req->direction = direction;
+  req->checksum_type = checksum_type;
+  memcpy( req->data, data, req->length );
+
+  chan->txq_head = (uint8_t)( ( chan->txq_head + 1 ) % LIN_TXQ_LEN );
 }
 
 void plin_lin_poll( void )

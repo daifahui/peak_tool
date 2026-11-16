@@ -25,6 +25,7 @@ enum
   PLIN_CMD_ADD_SLOT          = 0x10,
   PLIN_CMD_DELETE_SCHEDULE   = 0x11,
   PLIN_CMD_GET_SLOT_COUNT    = 0x12,
+  PLIN_CMD_GET_SLOT          = 0x13,
   PLIN_CMD_START_SCHEDULE    = 0x15,
   PLIN_CMD_RESUME_SCHEDULE   = 0x16,
   PLIN_CMD_SUSPEND_SCHEDULE  = 0x17,
@@ -343,6 +344,18 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       break;
     }
 
+    case PLIN_CMD_GET_SLOT:
+    {
+      uint8_t slot[PLIN_FRAME_ENTRY_SIZE] = { 0 };
+      uint8_t index = ( size >= 5 ) ? buf[4] : 0;
+
+      if( !plin_protocol_get_slot( channel, index, slot ) )
+        memset( slot, 0, sizeof( slot ) );
+
+      plin_reply( buf, slot, sizeof( slot ) );
+      break;
+    }
+
     case PLIN_CMD_START_SCHEDULE:
     case PLIN_CMD_RESUME_SCHEDULE:
       if( size >= 8 )
@@ -544,4 +557,46 @@ void plin_protocol_set_schedule_active( uint8_t channel, uint8_t active )
 
   plin_channels[channel].schedule_active = active ? 1 : 0;
   plin_lin_set_active( channel, active ? 1 : 0 );
+}
+
+void plin_protocol_set_frame_data( uint8_t channel, uint8_t id,
+                                   const uint8_t *data, uint8_t length )
+{
+  struct plin_channel *chan;
+
+  if( channel >= PLIN_CHANNELS || id >= PLIN_MAX_FRAMES || data == 0 )
+    return;
+
+  chan = &plin_channels[channel];
+  if( length > 8 )
+    length = 8;
+
+  chan->frames[id].raw[1] = length;
+  memcpy( &chan->frames[id].raw[8], data, length );
+  chan->frame_valid[id] = 1;
+}
+
+/* LIN_Write：主机经 Data OUT 0x05/0x06 下发的 36 字节消息，直接转为 LIN 发送请求 */
+void plin_protocol_process_data( uint8_t channel, const uint8_t *buf, uint16_t size )
+{
+  uint8_t pid;
+  uint8_t length;
+  uint8_t direction;
+  uint8_t checksum_type;
+
+  if( channel >= PLIN_CHANNELS || buf == 0 || size < PLIN_RX_MSG_SIZE )
+    return;
+
+  pid = buf[8];
+  length = buf[9];
+  direction = buf[10];
+  checksum_type = buf[11];
+  if( length > 8 )
+    length = 8;
+
+  /* 帧表同步更新，从机收到报头时即可用新数据应答 */
+  if( direction == 1 )
+    plin_protocol_set_frame_data( channel, (uint8_t)( pid & 0x3F ), &buf[28], length );
+
+  plin_lin_write( channel, pid, length, direction, checksum_type, &buf[28] );
 }
