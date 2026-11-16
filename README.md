@@ -9,7 +9,7 @@ USB 行为来自对真实 PLIN-USB 盒子的 USBPcap 抓包与 PLinApi 调用逐
 - [x] M1 工程骨架：以 pcan_cantact 为基础，STM32F072 目标可编译
 - [x] M2 USB 复合设备：VID/PID `0C72:0011`，MI_00=CAN、MI_01=LIN，12 个 bulk 端点
 - [x] M3 PLIN 命令通道：`0x04/0x84` 命令、`0x18` 状态轮询、`0x85/0x86` 异步 RX 队列
-- [ ] M4 LIN 主/从：帧表、调度表、Slave 自动应答、`UPDATE_BYTE_ARRAY`
+- [x] M4 LIN 主/从驱动：USART1(PA9/PA10)=LIN1、USART2(PA2/PA3)=LIN2，待接收发器验证
 - [ ] M5 与 PLIN-View Pro 联调
 
 ## 目标硬件

@@ -1,5 +1,6 @@
 #include <string.h>
 #include "plin_protocol.h"
+#include "plin_lin.h"
 #include "pcan_usb.h"
 #include "pcan_led.h"
 #include "usbd_core.h"
@@ -15,7 +16,9 @@ enum
   PLIN_CMD_GET_FRAME_ENTRY   = 0x03,
   PLIN_CMD_GET_BAUDRATE      = 0x05,
   PLIN_CMD_SET_ID_FILTER     = 0x06,
+  PLIN_CMD_GET_ID_FILTER     = 0x07,
   PLIN_CMD_GET_MASTER_MODE   = 0x08,
+  PLIN_CMD_GET_HW_NAME       = 0x0A,
   PLIN_CMD_IDENTIFY_HW       = 0x0B,
   PLIN_CMD_GET_FW_VERSION    = 0x0C,
   PLIN_CMD_ADD_SLOT          = 0x10,
@@ -211,11 +214,13 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
         chan->mode = ( buf[6] == PLIN_MODE_MASTER ) ? PLIN_MODE_MASTER :
                      ( buf[6] == PLIN_MODE_SLAVE )  ? PLIN_MODE_SLAVE  :
                                                       PLIN_MODE_NONE;
+        plin_lin_set_config( channel, chan->baudrate, chan->mode );
       }
       break;
 
     case PLIN_CMD_RST_HW_CONFIG:
       plin_reset_config( chan );
+      plin_lin_set_config( channel, 19200, PLIN_MODE_NONE );
       break;
 
     case PLIN_CMD_SET_FRAME_ENTRY:
@@ -244,6 +249,19 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       if( size >= 12 )
         memcpy( chan->filter, &buf[4], sizeof( chan->filter ) );
       break;
+
+    case PLIN_CMD_GET_ID_FILTER:
+      plin_reply( buf, chan->filter, sizeof( chan->filter ) );
+      break;
+
+    case PLIN_CMD_GET_HW_NAME:
+    {
+      /* Manager 挂载硬件时读取：固定 48 字节名称缓冲 */
+      uint8_t name[48] = { 0 };
+      memcpy( name, "STM32F072-LIN", 13 );
+      plin_reply( buf, name, sizeof( name ) );
+      break;
+    }
 
     case PLIN_CMD_GET_MASTER_MODE:
     {
@@ -290,6 +308,7 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
         chan->slot_count = 0;
         chan->schedule_active = 0;
         memset( chan->slots, 0, sizeof( chan->slots ) );
+        plin_lin_set_active( channel, 0 );
 
         memset( rsp, 0, sizeof( rsp ) );
         memcpy( rsp, buf, 8 );
@@ -309,6 +328,7 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       if( size >= 8 )
       {
         chan->schedule_active = 1;
+        plin_lin_set_active( channel, 1 );
         plin_send_raw( buf, 8 );
       }
       break;
@@ -317,6 +337,7 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       if( size >= 12 )
       {
         chan->schedule_active = 0;
+        plin_lin_set_active( channel, 0 );
         plin_send_raw( buf, 12 );
       }
       break;
@@ -376,8 +397,11 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       break;
     }
 
-    case PLIN_CMD_GET_BAUDRATE:
     case PLIN_CMD_XMT_WAKE_UP:
+      plin_lin_send_wakeup( channel );
+      break;
+
+    case PLIN_CMD_GET_BAUDRATE:
     case PLIN_CMD_GET_SERIAL_NUMBER:
     case PLIN_CMD_GET_TARGET_TIME:
     case PLIN_CMD_RESPONSE_REMAP:
@@ -387,4 +411,33 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       /* 无数据响应：只等待 OUT URB 完成 */
       break;
   }
+}
+
+int plin_protocol_get_frame( uint8_t channel, uint8_t id, uint8_t *entry )
+{
+  if( channel >= PLIN_CHANNELS || id >= PLIN_MAX_FRAMES || entry == 0 )
+    return 0;
+  if( !plin_channels[channel].frame_valid[id] )
+    return 0;
+
+  memcpy( entry, plin_channels[channel].frames[id].raw, PLIN_FRAME_ENTRY_SIZE );
+  return 1;
+}
+
+int plin_protocol_get_slot( uint8_t channel, uint8_t index, uint8_t *slot )
+{
+  if( channel >= PLIN_CHANNELS || index >= PLIN_MAX_SLOTS || slot == 0 )
+    return 0;
+  if( index >= plin_channels[channel].slot_count )
+    return 0;
+
+  memcpy( slot, plin_channels[channel].slots[index], PLIN_FRAME_ENTRY_SIZE );
+  return 1;
+}
+
+uint8_t plin_protocol_get_slot_count( uint8_t channel )
+{
+  if( channel >= PLIN_CHANNELS )
+    return 0;
+  return plin_channels[channel].slot_count;
 }

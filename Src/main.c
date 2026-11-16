@@ -5,6 +5,7 @@
 #include "pcan_usb.h"
 #include "pcan_varian.h"
 #include "plin_protocol.h"
+#include "plin_lin.h"
 
 void HAL_MspInit( void )
 {
@@ -97,6 +98,7 @@ int main( void )
   pcan_timestamp_init();
   pcan_protocol_init();
   plin_protocol_init();
+  plin_lin_init();
 
   pcan_led_set_mode( LED_CH0_RX, LED_MODE_BLINK_SLOW, 0 );
   pcan_led_set_mode( LED_CH0_TX, LED_MODE_BLINK_SLOW, 0 );
@@ -107,5 +109,6 @@ int main( void )
     pcan_led_poll();
     pcan_protocol_poll();
     plin_protocol_poll();
+    plin_lin_poll();
   }
 }

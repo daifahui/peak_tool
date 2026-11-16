@@ -18,3 +18,8 @@ void plin_protocol_poll( void );
 void plin_protocol_process_command( const uint8_t *buf, uint16_t size );
 void plin_protocol_on_tx_done( uint8_t channel );
 void plin_protocol_report_msg( uint8_t channel, const uint8_t *msg, uint16_t size );
+
+/* 供 LIN 驱动读取配置 */
+int plin_protocol_get_frame( uint8_t channel, uint8_t id, uint8_t *entry );
+int plin_protocol_get_slot( uint8_t channel, uint8_t index, uint8_t *slot );
+uint8_t plin_protocol_get_slot_count( uint8_t channel );
