@@ -48,7 +48,9 @@ enum
 
 #define PLIN_MAX_FRAMES     64
 #define PLIN_MAX_SLOTS      8
-#define PLIN_RX_QUEUE_LEN   8
+/* LIN 帧间隔最短 ~1 ms，32 条可吸收 ~30 ms 的 USB 抖动；
+ * 2 通道共 2.3 KB RAM，F072 余量足够。 */
+#define PLIN_RX_QUEUE_LEN   32
 #define PLIN_FRAME_ENTRY_SIZE 16
 
 struct plin_frame_entry
@@ -148,15 +150,21 @@ static void plin_kick_rx( uint8_t channel )
     return;
 
   memcpy( plin_rx_tx[channel], chan->rx_queue[chan->rx_tail], PLIN_RX_MSG_SIZE );
+
+  /* 只有提交成功才出队，失败时保留在队首等下一次重试，避免丢包 */
+  pdev->ep_in[ep & 0x0F].total_length = PLIN_RX_MSG_SIZE;
+  if( USBD_LL_Transmit( pdev, ep, plin_rx_tx[channel], PLIN_RX_MSG_SIZE ) != USBD_OK )
+  {
+    pdev->ep_in[ep & 0x0F].total_length = 0;
+    plin_proto_debug[2]++;
+    return;
+  }
+
   chan->rx_tail = (uint8_t)( ( chan->rx_tail + 1 ) % PLIN_RX_QUEUE_LEN );
   chan->rx_count--;
 
   plin_proto_debug[1]++;
   memcpy( (void*)plin_proto_last_tx, plin_rx_tx[channel], PLIN_RX_MSG_SIZE );
-
-  pdev->ep_in[ep & 0x0F].total_length = PLIN_RX_MSG_SIZE;
-  if( USBD_LL_Transmit( pdev, ep, plin_rx_tx[channel], PLIN_RX_MSG_SIZE ) != USBD_OK )
-    plin_proto_debug[2]++;
 }
 
 void plin_protocol_init( void )
