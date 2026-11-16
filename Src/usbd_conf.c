@@ -110,7 +110,7 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
   pdev->pData = &hpcd_USB_FS;
 
   hpcd_USB_FS.Instance = USB;
-  hpcd_USB_FS.Init.dev_endpoints = 6;
+  hpcd_USB_FS.Init.dev_endpoints = 8;
   hpcd_USB_FS.Init.speed = PCD_SPEED_FULL;
   hpcd_USB_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
   hpcd_USB_FS.Init.low_power_enable = DISABLE;
@@ -122,12 +122,21 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
     assert( 0 );
   }
 
-  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x00 , PCD_SNG_BUF, 0x18+(0*USB_FS_MAX_PACKET_SIZE));
-  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x80 , PCD_SNG_BUF, 0x18+(1*USB_FS_MAX_PACKET_SIZE));
-  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x01 , PCD_SNG_BUF, 0x18+(2*USB_FS_MAX_PACKET_SIZE));
-  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x81 , PCD_SNG_BUF, 0x18+(3*USB_FS_MAX_PACKET_SIZE));
-  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x02 , PCD_SNG_BUF, 0x18+(4*USB_FS_MAX_PACKET_SIZE));
-  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x82 , PCD_SNG_BUF, 0x18+(5*USB_FS_MAX_PACKET_SIZE));
+  /* PMA: 0x000-0x03F 为 8 个端点的 BTABLE，之后为 14 个 64 字节收发缓冲 */
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x00 , PCD_SNG_BUF, 0x40+(0*USB_FS_MAX_PACKET_SIZE));
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x80 , PCD_SNG_BUF, 0x40+(1*USB_FS_MAX_PACKET_SIZE));
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x01 , PCD_SNG_BUF, 0x40+(2*USB_FS_MAX_PACKET_SIZE));
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x81 , PCD_SNG_BUF, 0x40+(3*USB_FS_MAX_PACKET_SIZE));
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x02 , PCD_SNG_BUF, 0x40+(4*USB_FS_MAX_PACKET_SIZE));
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x82 , PCD_SNG_BUF, 0x40+(5*USB_FS_MAX_PACKET_SIZE));
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x03 , PCD_SNG_BUF, 0x40+(6*USB_FS_MAX_PACKET_SIZE));
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x83 , PCD_SNG_BUF, 0x40+(7*USB_FS_MAX_PACKET_SIZE));
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x04 , PCD_SNG_BUF, 0x40+(8*USB_FS_MAX_PACKET_SIZE));
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x84 , PCD_SNG_BUF, 0x40+(9*USB_FS_MAX_PACKET_SIZE));
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x05 , PCD_SNG_BUF, 0x40+(10*USB_FS_MAX_PACKET_SIZE));
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x85 , PCD_SNG_BUF, 0x40+(11*USB_FS_MAX_PACKET_SIZE));
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x06 , PCD_SNG_BUF, 0x40+(12*USB_FS_MAX_PACKET_SIZE));
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x86 , PCD_SNG_BUF, 0x40+(13*USB_FS_MAX_PACKET_SIZE));
   
   return USBD_OK;
 }

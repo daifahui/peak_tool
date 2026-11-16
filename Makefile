@@ -38,6 +38,7 @@ Src/pcan_can.c \
 Src/pcan_led.c \
 Src/pcan_protocol.c \
 Src/pcan_timestamp.c \
+Src/plin_protocol.c \
 Src/system_stm32f0xx.c \
 Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_ll_usb.c \
 Drivers/STM32F0xx_HAL_Driver/Src/stm32f0xx_hal_pcd.c \
@@ -100,6 +101,7 @@ C_DEFS =  \
 -DUSE_HAL_DRIVER \
 -D$(MCU_SERIES) \
 -DNDEBUG \
+-DUSBD_MAX_NUM_INTERFACES=2U \
 $(BOARD_DEFS)
 
 
