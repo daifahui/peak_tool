@@ -17,6 +17,15 @@ enum
   LIN_PARSE_CHECKSUM,
 };
 
+/* 每通道的帧阶段：IDLE 空闲，TX 中断发送中，RX 主机等待从机应答 */
+enum
+{
+  LIN_PHASE_IDLE = 0,
+  LIN_PHASE_TX,
+  LIN_PHASE_TX_SLAVE,
+  LIN_PHASE_RX,
+};
+
 struct lin_channel
 {
   USART_TypeDef *usart;
@@ -26,18 +35,40 @@ struct lin_channel
 
   uint8_t  slot_index;
   uint32_t next_slot_ms;
+  uint16_t slot_delay;
 
   volatile uint8_t  rx_ring[LIN_RX_RING_SIZE];
   volatile uint8_t  rx_head;
   volatile uint8_t  rx_tail;
   volatile uint8_t  break_flag;
 
+  /* 中断发送引擎 */
+  volatile uint8_t  tx_break_wait;
+  volatile uint8_t  tx_done;
+  uint8_t  tx_buf[16];
+  uint8_t  tx_len;
+  uint8_t  tx_pos;
+
+  /* 当前帧上下文 */
+  uint8_t  phase;
+  uint8_t  frame_id;
+  uint8_t  frame_pid;
+  uint8_t  frame_len;
+  uint8_t  frame_dir;
+  uint8_t  frame_cs;
+  uint8_t  frame_report;
+  uint16_t frame_error;
+  uint8_t  rx_expected;
+  uint8_t  rx_count;
+  uint32_t rx_deadline_ms;
+  uint8_t  rx_data[8];
+
+  /* 从机解析 */
   uint8_t  parse_state;
   uint8_t  pid;
   uint8_t  rx_len;
-  uint8_t  rx_count;
-  uint8_t  rx_data[8];
-  uint32_t last_rx_ms;
+  uint8_t  parse_count;
+  uint8_t  last_rx_ms;
 
   uint16_t sequence;
 };
@@ -50,61 +81,27 @@ static struct lin_channel lin_channels[2] =
 
 volatile uint32_t plin_lin_debug[8];
 
-static int lin_wait_flag( struct lin_channel *chan, uint32_t flag, uint32_t timeout_ms )
+static uint8_t lin_pid( uint8_t id )
 {
-  uint32_t start = HAL_GetTick();
+  uint8_t p0 = (uint8_t)( ( ( id >> 0 ) ^ ( id >> 1 ) ^ ( id >> 2 ) ^ ( id >> 4 ) ) & 1u );
+  uint8_t p1 = (uint8_t)( ~( ( id >> 1 ) ^ ( id >> 3 ) ^ ( id >> 4 ) ^ ( id >> 5 ) ) & 1u );
 
-  while( ( chan->usart->ISR & flag ) == 0 )
-  {
-    /* LIN 发送是阻塞的，期间保持 USB 命令/异步管道有人服务 */
-    pcan_usb_poll();
-
-    if( ( HAL_GetTick() - start ) > timeout_ms )
-    {
-      plin_lin_debug[2]++;
-      return 0;
-    }
-  }
-  return 1;
+  return (uint8_t)( id | ( p0 << 6 ) | ( p1 << 7 ) );
 }
 
-static void lin_delay_ms( uint32_t ms )
+static uint8_t lin_checksum( uint8_t id, uint8_t pid, uint8_t type,
+                             const uint8_t *data, uint8_t length )
 {
-  uint32_t start = HAL_GetTick();
+  uint16_t sum = 0;
+  int enhanced = ( type == 2 ) || ( type == 3 && id != 0x3C && id != 0x3D );
 
-  while( ( HAL_GetTick() - start ) < ms )
-    pcan_usb_poll();
-}
+  for( uint8_t i = 0; i < length; i++ )
+    sum += data[i];
 
-static int lin_putc( struct lin_channel *chan, uint8_t data )
-{
-  if( !lin_wait_flag( chan, USART_ISR_TXE, 5 ) )
-    return 0;
-  chan->usart->TDR = data;
-  return 1;
-}
+  if( enhanced )
+    sum += pid;
 
-static int lin_wait_tc( struct lin_channel *chan )
-{
-  return lin_wait_flag( chan, USART_ISR_TC, 10 );
-}
-
-static int lin_send_break( struct lin_channel *chan )
-{
-  plin_lin_debug[6]++;
-  chan->usart->RQR = USART_RQR_SBKRQ;
-  return lin_wait_tc( chan );
-}
-
-static void lin_flush_rx( struct lin_channel *chan )
-{
-  while( chan->usart->ISR & USART_ISR_RXNE )
-    (void)chan->usart->RDR;
-
-  chan->usart->ICR = USART_ICR_ORECF | USART_ICR_FECF;
-  chan->rx_head = 0;
-  chan->rx_tail = 0;
-  chan->break_flag = 0;
+  return (uint8_t)( 0xFF - ( sum & 0xFF ) );
 }
 
 static void lin_push_rx( struct lin_channel *chan, uint8_t data )
@@ -128,27 +125,15 @@ static int lin_pop_rx( struct lin_channel *chan, uint8_t *data )
   return 1;
 }
 
-static uint8_t lin_pid( uint8_t id )
+static void lin_flush_rx( struct lin_channel *chan )
 {
-  uint8_t p0 = (uint8_t)( ( ( id >> 0 ) ^ ( id >> 1 ) ^ ( id >> 2 ) ^ ( id >> 4 ) ) & 1u );
-  uint8_t p1 = (uint8_t)( ~( ( id >> 1 ) ^ ( id >> 3 ) ^ ( id >> 4 ) ^ ( id >> 5 ) ) & 1u );
+  while( chan->usart->ISR & USART_ISR_RXNE )
+    (void)chan->usart->RDR;
 
-  return (uint8_t)( id | ( p0 << 6 ) | ( p1 << 7 ) );
-}
-
-static uint8_t lin_checksum( uint8_t id, uint8_t pid, uint8_t type,
-                             const uint8_t *data, uint8_t length )
-{
-  uint16_t sum = 0;
-  int enhanced = ( type == 2 ) || ( type == 3 && id != 0x3C && id != 0x3D );
-
-  for( uint8_t i = 0; i < length; i++ )
-    sum += data[i];
-
-  if( enhanced )
-    sum += pid;
-
-  return (uint8_t)( 0xFF - ( sum & 0xFF ) );
+  chan->usart->ICR = USART_ICR_ORECF | USART_ICR_FECF;
+  chan->rx_head = 0;
+  chan->rx_tail = 0;
+  chan->break_flag = 0;
 }
 
 static void lin_report( struct lin_channel *chan, uint8_t pid, uint8_t length,
@@ -190,120 +175,52 @@ static void lin_report( struct lin_channel *chan, uint8_t pid, uint8_t length,
   plin_protocol_report_msg( (uint8_t)( chan - lin_channels ), msg, sizeof( msg ) );
 }
 
-static void lin_master_frame( struct lin_channel *chan, uint8_t id, const uint8_t *entry )
+/* ---- 中断发送引擎 ------------------------------------------------------ */
+
+static void lin_tx_start( struct lin_channel *chan, uint8_t with_break )
 {
-  uint8_t length = entry[1];
-  uint8_t direction = entry[2];
-  uint8_t checksum_type = entry[3];
-  uint16_t flags = (uint16_t)( entry[4] | ( entry[5] << 8 ) );
-  uint8_t pid = lin_pid( id );
-  uint8_t data[8] = { 0 };
-  uint8_t checksum = 0;
-  uint16_t error = 0;
-  int tx_ok;
+  USART_TypeDef *usart = chan->usart;
 
-  if( direction == 0 )
-    return;
-  if( length > 8 )
-    length = 8;
+  chan->tx_pos = 0;
+  chan->tx_done = 0;
+  chan->tx_break_wait = 0;
 
-  plin_lin_debug[0]++;
-  plin_lin_debug[3] = pid;
-  plin_lin_debug[4] = length;
+  usart->CR1 &= ~( USART_CR1_TXEIE | USART_CR1_TCIE );
+  usart->ICR = USART_ICR_TCCF;
 
-  chan->usart->CR1 &= ~USART_CR1_RXNEIE;
-  lin_flush_rx( chan );
-
-  tx_ok = lin_send_break( chan ) &&
-          lin_putc( chan, 0x55 ) &&
-          lin_putc( chan, pid ) &&
-          lin_wait_tc( chan );
-
-  if( !tx_ok )
+  if( with_break )
   {
-    error = 0x0010;
-    length = 0;
-    goto finish;
-  }
-
-  if( direction == 1 && ( flags & 0x0001 ) )
-  {
-    memcpy( data, &entry[8], length );
-    checksum = lin_checksum( id, pid, checksum_type, data, length );
-
-    for( uint8_t i = 0; i < length; i++ )
-    {
-      if( !lin_putc( chan, data[i] ) )
-      {
-        tx_ok = 0;
-        break;
-      }
-    }
-    if( tx_ok )
-      tx_ok = lin_putc( chan, checksum );
-    if( tx_ok )
-      tx_ok = lin_wait_tc( chan );
-
-    if( !tx_ok )
-    {
-      error = 0x0010;
-      length = 0;
-    }
-  }
-  else if( direction == 1 )
-  {
-    /* 未使能 RESPONSE_ENABLE：只有报头，按无应答上报 */
-    error = 0x0008;
-    length = 0;
+    /* 先发 break，等 TC 确认 break 完整送出后再灌数据 */
+    usart->RQR = USART_RQR_SBKRQ;
+    chan->tx_break_wait = 1;
+    usart->CR1 |= USART_CR1_TCIE;
   }
   else
   {
-    uint8_t rx[9];
-    uint8_t count = 0;
-    uint32_t start = HAL_GetTick();
-    uint32_t timeout = (uint32_t)( 5 + length * 2 );
-
-    lin_delay_ms( 1 );
-    lin_flush_rx( chan );
-
-    while( count < (uint8_t)( length + 1 ) )
-    {
-      pcan_usb_poll();
-
-      if( chan->usart->ISR & USART_ISR_RXNE )
-      {
-        rx[count++] = (uint8_t)chan->usart->RDR;
-        start = HAL_GetTick();
-      }
-      else if( ( HAL_GetTick() - start ) > timeout )
-      {
-        break;
-      }
-    }
-
-    if( count == (uint8_t)( length + 1 ) )
-    {
-      memcpy( data, rx, length );
-      checksum = rx[length];
-    }
-    else
-    {
-      error = 0x0008;
-      length = 0;
-    }
+    usart->CR1 |= USART_CR1_TXEIE;
   }
-
-finish:
-  lin_delay_ms( 1 );
-  lin_flush_rx( chan );
-  chan->usart->CR1 |= USART_CR1_RXNEIE;
-
-  plin_lin_debug[7] = HAL_GetTick();
-  plin_lin_debug[1]++;
-  lin_report( chan, pid, length, direction, checksum_type, error, checksum, data );
 }
 
-static void lin_master_poll( struct lin_channel *chan )
+static void lin_tx_stop( struct lin_channel *chan )
+{
+  chan->usart->CR1 &= ~( USART_CR1_TXEIE | USART_CR1_TCIE );
+  chan->tx_break_wait = 0;
+  chan->tx_done = 0;
+  chan->tx_len = 0;
+  chan->tx_pos = 0;
+}
+
+static void lin_frame_done( struct lin_channel *chan )
+{
+  chan->phase = LIN_PHASE_IDLE;
+
+  if( chan->mode == PLIN_LIN_MODE_MASTER && chan->active )
+    chan->next_slot_ms = HAL_GetTick() + chan->slot_delay;
+}
+
+/* ---- 主机调度 ---------------------------------------------------------- */
+
+static void lin_master_start( struct lin_channel *chan )
 {
   uint8_t channel = (uint8_t)( chan - lin_channels );
   uint8_t count = plin_protocol_get_slot_count( channel );
@@ -311,6 +228,13 @@ static void lin_master_poll( struct lin_channel *chan )
   uint8_t entry[16];
   uint8_t id;
   uint16_t delay;
+  uint8_t length;
+  uint8_t direction;
+  uint8_t checksum_type;
+  uint16_t flags;
+  uint8_t pid;
+  uint8_t checksum = 0;
+  uint8_t data[8] = { 0 };
 
   if( count == 0 )
   {
@@ -318,9 +242,6 @@ static void lin_master_poll( struct lin_channel *chan )
     lin_flush_rx( chan );
     return;
   }
-
-  if( (int32_t)( HAL_GetTick() - chan->next_slot_ms ) < 0 )
-    return;
 
   if( !plin_protocol_get_slot( channel, chan->slot_index, slot ) )
   {
@@ -333,51 +254,152 @@ static void lin_master_poll( struct lin_channel *chan )
   if( delay < 4 )
     delay = 4;
 
-  if( plin_protocol_get_frame( channel, id, entry ) )
-    lin_master_frame( chan, id, entry );
-
+  chan->slot_delay = delay;
   chan->slot_index = (uint8_t)( ( chan->slot_index + 1 ) % count );
-  chan->next_slot_ms = HAL_GetTick() + delay;
-}
 
-static void lin_send_slave_response( struct lin_channel *chan, uint8_t id, const uint8_t *entry )
-{
-  uint8_t length = entry[1];
-  uint8_t checksum_type = entry[3];
-  uint8_t pid = lin_pid( id );
-  uint8_t data[8] = { 0 };
-  uint8_t checksum;
-  uint16_t error = 0;
-  int tx_ok = 1;
+  if( !plin_protocol_get_frame( channel, id, entry ) )
+  {
+    chan->next_slot_ms = HAL_GetTick() + delay;
+    return;
+  }
+
+  length = entry[1];
+  direction = entry[2];
+  checksum_type = entry[3];
+  flags = (uint16_t)( entry[4] | ( entry[5] << 8 ) );
+
+  if( direction == 0 )
+  {
+    chan->next_slot_ms = HAL_GetTick() + delay;
+    return;
+  }
 
   if( length > 8 )
     length = 8;
 
-  memcpy( data, &entry[8], length );
-  checksum = lin_checksum( id, pid, checksum_type, data, length );
+  pid = lin_pid( id );
 
-  chan->usart->CR1 &= ~USART_CR1_RXNEIE;
-  for( uint8_t i = 0; i < length; i++ )
-  {
-    if( !lin_putc( chan, data[i] ) )
-    {
-      tx_ok = 0;
-      break;
-    }
-  }
-  if( tx_ok )
-    tx_ok = lin_putc( chan, checksum );
-  if( tx_ok )
-    tx_ok = lin_wait_tc( chan );
-  if( !tx_ok )
-    error = 0x0010;
+  chan->frame_id = id;
+  chan->frame_pid = pid;
+  chan->frame_len = length;
+  chan->frame_dir = direction;
+  chan->frame_cs = checksum_type;
+  chan->frame_error = 0;
+  chan->frame_report = 0;
+  chan->rx_expected = 0;
+  chan->rx_count = 0;
 
-  lin_delay_ms( 1 );
+  plin_lin_debug[0]++;
+  plin_lin_debug[3] = pid;
+  plin_lin_debug[4] = length;
+
   lin_flush_rx( chan );
-  chan->usart->CR1 |= USART_CR1_RXNEIE;
 
-  plin_lin_debug[5]++;
-  lin_report( chan, pid, tx_ok ? length : 0, 1, checksum_type, error, checksum, data );
+  chan->tx_buf[0] = 0x55;
+  chan->tx_buf[1] = pid;
+
+  if( direction == 1 && ( flags & 0x0001 ) )
+  {
+    /* 主机发布：报头 + 数据 + 校验和一次发完 */
+    memcpy( data, &entry[8], length );
+    checksum = lin_checksum( id, pid, checksum_type, data, length );
+
+    memcpy( &chan->tx_buf[2], data, length );
+    chan->tx_buf[2 + length] = checksum;
+    chan->tx_len = (uint8_t)( 3 + length );
+    chan->frame_report = 1;
+
+    lin_tx_start( chan, 1 );
+    chan->phase = LIN_PHASE_TX;
+  }
+  else if( direction == 1 )
+  {
+    /* 未使能 RESPONSE_ENABLE：只发报头，按无应答上报 */
+    chan->tx_len = 2;
+    chan->frame_report = 1;
+    chan->frame_len = 0;
+    chan->frame_error = 0x0008;
+
+    lin_tx_start( chan, 1 );
+    chan->phase = LIN_PHASE_TX;
+  }
+  else
+  {
+    /* 主机订阅：报头发完后等待从机应答 */
+    chan->tx_len = 2;
+    chan->rx_expected = (uint8_t)( length + 1 );
+
+    lin_tx_start( chan, 1 );
+    chan->phase = LIN_PHASE_TX;
+  }
+}
+
+static void lin_master_poll( struct lin_channel *chan )
+{
+  uint8_t byte;
+
+  if( chan->phase == LIN_PHASE_RX )
+  {
+    while( chan->rx_count < chan->rx_expected && lin_pop_rx( chan, &byte ) )
+      chan->rx_data[chan->rx_count++] = byte;
+
+    if( chan->rx_count >= chan->rx_expected )
+    {
+      uint8_t checksum = chan->rx_data[chan->rx_expected - 1];
+      uint8_t expect = lin_checksum( chan->frame_id, chan->frame_pid, chan->frame_cs,
+                                     chan->rx_data, chan->frame_len );
+
+      lin_report( chan, chan->frame_pid, chan->frame_len, chan->frame_dir,
+                  chan->frame_cs,
+                  ( expect == checksum ) ? 0 : 0x0020, checksum,
+                  chan->rx_data );
+      lin_frame_done( chan );
+    }
+    else if( (int32_t)( HAL_GetTick() - chan->rx_deadline_ms ) >= 0 )
+    {
+      lin_report( chan, chan->frame_pid, 0, chan->frame_dir, chan->frame_cs,
+                  0x0008, 0, 0 );
+      lin_frame_done( chan );
+    }
+    return;
+  }
+
+  if( chan->phase != LIN_PHASE_IDLE )
+    return;
+
+  if( (int32_t)( HAL_GetTick() - chan->next_slot_ms ) < 0 )
+    return;
+
+  lin_master_start( chan );
+}
+
+/* ---- 从机 -------------------------------------------------------------- */
+
+static void lin_slave_start_response( struct lin_channel *chan, uint8_t id,
+                                      const uint8_t *entry )
+{
+  uint8_t length = entry[1];
+  uint8_t checksum_type = entry[3];
+  uint8_t pid = lin_pid( id );
+  uint8_t checksum;
+
+  if( length > 8 )
+    length = 8;
+
+  memcpy( chan->tx_buf, &entry[8], length );
+  checksum = lin_checksum( id, pid, checksum_type, chan->tx_buf, length );
+  chan->tx_buf[length] = checksum;
+
+  chan->frame_id = id;
+  chan->frame_pid = pid;
+  chan->frame_len = length;
+  chan->frame_dir = 1;
+  chan->frame_cs = checksum_type;
+  chan->frame_error = 0;
+
+  chan->tx_len = (uint8_t)( length + 1 );
+  lin_tx_start( chan, 0 );
+  chan->phase = LIN_PHASE_TX_SLAVE;
 }
 
 static void lin_slave_poll( struct lin_channel *chan )
@@ -385,11 +407,14 @@ static void lin_slave_poll( struct lin_channel *chan )
   uint8_t channel = (uint8_t)( chan - lin_channels );
   uint8_t byte;
 
+  if( chan->phase == LIN_PHASE_TX_SLAVE )
+    return;
+
   if( chan->break_flag )
   {
     chan->break_flag = 0;
     chan->parse_state = LIN_PARSE_WAIT_SYNC;
-    chan->rx_count = 0;
+    chan->parse_count = 0;
   }
 
   while( lin_pop_rx( chan, &byte ) )
@@ -409,7 +434,7 @@ static void lin_slave_poll( struct lin_channel *chan )
 
         chan->pid = byte;
         chan->parse_state = LIN_PARSE_WAIT_BREAK;
-        chan->rx_count = 0;
+        chan->parse_count = 0;
 
         if( plin_protocol_get_frame( channel, id, entry ) )
         {
@@ -421,7 +446,8 @@ static void lin_slave_poll( struct lin_channel *chan )
 
           if( entry[2] == 1 && ( flags & 0x0001 ) )
           {
-            lin_send_slave_response( chan, id, entry );
+            lin_slave_start_response( chan, id, entry );
+            return;
           }
           else if( entry[2] >= 2 )
           {
@@ -433,8 +459,8 @@ static void lin_slave_poll( struct lin_channel *chan )
       }
 
       case LIN_PARSE_DATA:
-        chan->rx_data[chan->rx_count++] = byte;
-        if( chan->rx_count >= chan->rx_len )
+        chan->rx_data[chan->parse_count++] = byte;
+        if( chan->parse_count >= chan->rx_len )
           chan->parse_state = LIN_PARSE_CHECKSUM;
         break;
 
@@ -448,7 +474,7 @@ static void lin_slave_poll( struct lin_channel *chan )
           uint8_t expect = lin_checksum( id, chan->pid, entry[3],
                                          chan->rx_data, chan->rx_len );
           lin_report( chan, chan->pid, chan->rx_len, entry[2], entry[3],
-                      ( expect == byte ) ? 0 : 0x0004, byte,
+                      ( expect == byte ) ? 0 : 0x0020, byte,
                       chan->rx_data );
         }
         chan->parse_state = LIN_PARSE_WAIT_BREAK;
@@ -467,6 +493,8 @@ static void lin_slave_poll( struct lin_channel *chan )
     chan->parse_state = LIN_PARSE_WAIT_BREAK;
   }
 }
+
+/* ---- 公共接口 ---------------------------------------------------------- */
 
 static void lin_gpio_init( void )
 {
@@ -490,6 +518,8 @@ static void lin_usart_config( struct lin_channel *chan, uint16_t baudrate )
 {
   USART_TypeDef *usart = chan->usart;
   uint32_t pclk = ( usart == USART1 ) ? HAL_RCC_GetHCLKFreq() : HAL_RCC_GetPCLK1Freq();
+
+  lin_tx_stop( chan );
 
   usart->CR1 = 0;
   usart->CR2 = 0;
@@ -521,6 +551,7 @@ void plin_lin_init( void )
 
     chan->mode = PLIN_LIN_MODE_NONE;
     chan->active = 0;
+    chan->phase = LIN_PHASE_IDLE;
     chan->slot_index = 0;
     chan->next_slot_ms = 0;
     chan->parse_state = LIN_PARSE_WAIT_BREAK;
@@ -543,6 +574,7 @@ void plin_lin_set_config( uint8_t channel, uint16_t baudrate, uint8_t mode )
   chan->baudrate = baudrate;
   chan->mode = mode;
   chan->active = 0;
+  chan->phase = LIN_PHASE_IDLE;
   chan->sequence = 0;
   chan->parse_state = LIN_PARSE_WAIT_BREAK;
   lin_usart_config( chan, baudrate );
@@ -557,6 +589,7 @@ void plin_lin_set_active( uint8_t channel, uint8_t active )
   chan = &lin_channels[channel];
 
   chan->active = active;
+  chan->phase = LIN_PHASE_IDLE;
   chan->slot_index = 0;
   chan->next_slot_ms = HAL_GetTick();
   lin_flush_rx( chan );
@@ -569,10 +602,16 @@ void plin_lin_send_wakeup( uint8_t channel )
   if( channel >= 2 )
     return;
   chan = &lin_channels[channel];
-  if( chan->mode == PLIN_LIN_MODE_NONE )
+  if( chan->mode == PLIN_LIN_MODE_NONE || chan->phase != LIN_PHASE_IDLE )
     return;
 
-  (void)lin_send_break( chan );
+  /* 仅发送 break，不跟随数据 */
+  chan->tx_len = 0;
+  chan->frame_report = 0;
+  chan->rx_expected = 0;
+
+  lin_tx_start( chan, 1 );
+  chan->phase = LIN_PHASE_TX;
 }
 
 void plin_lin_poll( void )
@@ -581,19 +620,60 @@ void plin_lin_poll( void )
   {
     struct lin_channel *chan = &lin_channels[i];
 
+    if( chan->tx_done )
+    {
+      chan->tx_done = 0;
+
+      if( chan->phase == LIN_PHASE_TX )
+      {
+        if( chan->frame_report )
+        {
+          uint8_t length = chan->frame_len;
+          const uint8_t *data = ( length && chan->frame_error == 0 ) ?
+                                &chan->tx_buf[2] : 0;
+
+          lin_report( chan, chan->frame_pid, length, chan->frame_dir,
+                      chan->frame_cs, chan->frame_error, 0, data );
+          lin_frame_done( chan );
+        }
+        else if( chan->rx_expected )
+        {
+          /* 报头已发完，转入应答接收窗口；ring 里可能已有先到的应答字节 */
+          chan->phase = LIN_PHASE_RX;
+          chan->rx_count = 0;
+          chan->rx_deadline_ms = HAL_GetTick() + 5u + chan->frame_len * 2u;
+        }
+        else
+        {
+          lin_frame_done( chan );
+        }
+      }
+      else if( chan->phase == LIN_PHASE_TX_SLAVE )
+      {
+        lin_report( chan, chan->frame_pid, chan->frame_len, 1,
+                    chan->frame_cs, chan->frame_error, 0, chan->tx_buf );
+        lin_frame_done( chan );
+        chan->parse_state = LIN_PARSE_WAIT_BREAK;
+        lin_flush_rx( chan );
+      }
+    }
+
     if( chan->mode == PLIN_LIN_MODE_MASTER && chan->active )
       lin_master_poll( chan );
     else if( chan->mode == PLIN_LIN_MODE_SLAVE )
       lin_slave_poll( chan );
-    else
+    else if( chan->phase == LIN_PHASE_IDLE )
       lin_flush_rx( chan );
   }
 }
+
+/* ---- 中断 -------------------------------------------------------------- */
 
 static void lin_irq_handler( struct lin_channel *chan )
 {
   USART_TypeDef *usart = chan->usart;
   uint32_t isr = usart->ISR;
+  uint32_t cr1 = usart->CR1;
 
   if( isr & USART_ISR_LBDF )
   {
@@ -613,6 +693,37 @@ static void lin_irq_handler( struct lin_channel *chan )
 
   if( isr & USART_ISR_FE )
     usart->ICR = USART_ICR_FECF;
+
+  if( ( isr & USART_ISR_TXE ) && ( cr1 & USART_CR1_TXEIE ) )
+  {
+    if( chan->tx_pos < chan->tx_len )
+    {
+      usart->TDR = chan->tx_buf[chan->tx_pos++];
+    }
+    else
+    {
+      usart->CR1 &= ~USART_CR1_TXEIE;
+      usart->CR1 |= USART_CR1_TCIE;
+    }
+  }
+
+  if( ( isr & USART_ISR_TC ) && ( cr1 & USART_CR1_TCIE ) )
+  {
+    usart->ICR = USART_ICR_TCCF;
+
+    if( chan->tx_break_wait )
+    {
+      /* break 已完整送出，开始发送后续字节 */
+      chan->tx_break_wait = 0;
+      usart->CR1 &= ~USART_CR1_TCIE;
+      usart->CR1 |= USART_CR1_TXEIE;
+    }
+    else
+    {
+      usart->CR1 &= ~USART_CR1_TCIE;
+      chan->tx_done = 1;
+    }
+  }
 }
 
 void USART1_IRQHandler( void )

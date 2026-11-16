@@ -9,7 +9,7 @@ USB 行为来自对真实 PLIN-USB 盒子的 USBPcap 抓包与 PLinApi 调用逐
 - [x] M1 工程骨架：以 pcan_cantact 为基础，STM32F072 目标可编译
 - [x] M2 USB 复合设备：VID/PID `0C72:0011`，MI_00=CAN、MI_01=LIN，12 个 bulk 端点
 - [x] M3 PLIN 命令通道：`0x04/0x84` 命令、`0x18` 状态轮询、`0x85/0x86` 异步 RX 队列
-- [x] M4 LIN 主/从驱动：USART1(PA9/PA10)=LIN1、USART2(PA2/PA3)=LIN2，待接收发器验证
+- [x] M4 LIN 主/从驱动：USART1(PA9/PA10)=LIN1、USART2(PA2/PA3)=LIN2；break/报头/数据全部由 TXE/TC 中断发送，主循环不再阻塞
 - [ ] M5 与 PLIN-View Pro 联调：设备枚举、连接、初始化、帧表、调度、状态已通过；RX 报文投递待解决
 
 ## 引脚分配
@@ -65,6 +65,13 @@ Restart-Service -Name 'PLIN Manager' -Force
 |---|---|---|
 | PCAN-View | CAN (MI_00) | Pro FD 身份下不可用（驱动报错 10）；经典身份固件 `usbcan_f072_sja1000` 可被 PCAN-USB 驱动识别 |
 | PLIN-View Pro 3.1.x | LIN (MI_01) | 枚举/连接/初始化/帧表/调度/状态通过；RX 投递待解决 |
+
+## 实现说明
+
+- LIN 发送采用 USART TXE/TC 中断状态机：主机调度、从机应答都只把字节序列交给发送引擎，
+  主循环不再按字节忙等，USB 命令/数据通道始终有人服务。
+- LIN 接收由 RXNE 中断写入 128 字节环形缓冲，主循环解析；主机等待应答带超时窗口。
+- 时间戳使用 TIM2 1 MHz 计数器（见下）。
 
 ## 已知问题 / 待办
 
