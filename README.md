@@ -75,6 +75,7 @@ Restart-Service -Name 'PLIN Manager' -Force
 - `LIN_Write` 支持：Data OUT `0x05/0x06` 的 36 字节消息解析后排队，主机模式下优先于周期调度立即发送；
   从机模式下写入帧表，收到报头时用新数据应答。每通道 8 条写请求队列，满时淘汰最旧请求。
 - 时间戳使用 TIM2 1 MHz 计数器（见下）。
+- 生产构建已移除调试计数数组；`GET_STATUS` 仍提供每通道 RX 溢出计数。
 
 ### Flash 离线调度表
 
@@ -102,8 +103,8 @@ Restart-Service -Name 'PLIN Manager' -Force
 - **PLIN RX 投递**：0x85 的 36 字节报文线上内容已正确（PID/长度/方向/数据/序号/时间戳），但当前
   `PLinMng 3.0.0.219`（驱动 `1.7.0.1122`）不把报文投递给客户端；抓包文档环境是
   `3.0.1.227 / 1.7.1.1147`，怀疑版本差异。需要真实 PLIN 盒子在当前环境抓一次 0x85 对比，或升级 PEAK 驱动。
-- **CAN / PCAN-View**：MI_00 仍是 PCAN-USB 的 SJA1000 协议；Pro FD 身份下驱动无法启动。
-  需要适配 Pro FD 的 CAN 协议，或重新考虑设备身份方案。
+- **CAN / PCAN-View**：Pro FD 身份下 MI_00 仍使用 SJA1000 命令协议，驱动无法启动；
+  需要适配 Pro FD 的 CAN 协议，或使用经典身份固件 `make usbcan_f072_sja1000`（`0C72:000C`）。
 
 ### LIN / PLIN 功能
 
@@ -113,14 +114,13 @@ Restart-Service -Name 'PLIN Manager' -Force
   `GET_TARGET_TIME (0x26)`、`RESPONSE_REMAP` 生效、`LEDS_ON_OFF (0x28)`、
   `BREAK_LEN (0x29)` / `TERMINATION (0x2A)`、高级从机/Flash 模式命令。
 - `SET_ID_FILTER` 只保存未生效；从机应答重映射未实现。
-- 错误位映射需修正：校验错误应为 `0x020`，当前从机路径用了 `0x004`；同步/奇偶校验未检查。
+- 校验错误已统一为 `0x0020`；同步/奇偶校验和错误位完整映射未实现。
 - 时间戳使用 TIM2 1 MHz 自由运行计数器（32 位 µs，无中断，约 71.6 分钟回绕）。
-- 调试点 `plin_lin_debug` / `plin_proto_debug` 暂留，后续可移除或加宏开关。
-- F072 的 USB PMA 实际可用区约 `0x2FC`，EP3/EP6 OUT 与 EP2/EP5 共享缓冲；若后续使用 CAN2 需重新分配。
+- F072 的 USB PMA 实际可用区约 `0x2FC`；EP6 OUT 独占 40 字节缓冲，EP3 OUT 仍与 EP2 共享。
 
 ### 工程
 
-- `.github/workflows` 只做编译，不检查 pack/烧录。
+- `.github/workflows/firmware_build.yml` 分别构建 Pro FD 与经典 SJA1000 两个目标，并上传 `.hex`/`.bin`。
 - 授权提醒：PEAK 名称与协议仅用于兼容性研究，商用/量产前请确认授权。
 
 ## 参考与授权

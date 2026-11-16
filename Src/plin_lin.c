@@ -94,8 +94,6 @@ static struct lin_channel lin_channels[2] =
   { .usart = USART2 },
 };
 
-volatile uint32_t plin_lin_debug[8];
-
 static uint8_t lin_pid( uint8_t id )
 {
   uint8_t p0 = (uint8_t)( ( ( id >> 0 ) ^ ( id >> 1 ) ^ ( id >> 2 ) ^ ( id >> 4 ) ) & 1u );
@@ -350,10 +348,6 @@ static void lin_master_start( struct lin_channel *chan )
   chan->frame_report = 0;
   chan->rx_expected = 0;
   chan->rx_count = 0;
-
-  plin_lin_debug[0]++;
-  plin_lin_debug[3] = pid;
-  plin_lin_debug[4] = length;
 
   lin_flush_rx( chan );
 
@@ -706,7 +700,6 @@ void plin_lin_write( uint8_t channel, uint8_t pid, uint8_t length, uint8_t direc
   {
     /* 队列满时丢弃最旧请求，保留最新写入 */
     chan->txq_tail = (uint8_t)( ( chan->txq_tail + 1 ) % LIN_TXQ_LEN );
-    plin_lin_debug[2]++;
   }
 
   req = &chan->txq[chan->txq_head];

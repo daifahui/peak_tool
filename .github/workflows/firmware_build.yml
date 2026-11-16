@@ -10,15 +10,32 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - usbcan_f072
+          - usbcan_f072_sja1000
+
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      #- name: arm-none-eabi-gcc
-      #  uses: fiam/arm-none-eabi-gcc@v1
-      #  with:
-      #    release: '10-2020-q4'
-      - name: install toolchain...
-        run: sudo apt install -y gcc-arm-none-eabi
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make gcc-arm-none-eabi
 
-      - name: build firmware...
-        run: make
+      - name: Build ${{ matrix.target }}
+        run: make ${{ matrix.target }}
+
+      - name: Report size
+        run: arm-none-eabi-size build-${{ matrix.target }}/*.elf
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.target }}
+          path: |
+            build-${{ matrix.target }}/*.hex
+            build-${{ matrix.target }}/*.bin
+          if-no-files-found: error

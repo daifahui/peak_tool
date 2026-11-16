@@ -58,8 +58,6 @@ enum
   PLIN_MODE_MASTER = 2,
 };
 
-#define PLIN_RX_QUEUE_LEN   32
-
 struct plin_frame_entry
 {
   uint8_t raw[PLIN_FRAME_ENTRY_SIZE];
@@ -94,10 +92,6 @@ struct plin_channel
 static struct plin_channel plin_channels[PLIN_CHANNELS];
 static uint8_t plin_cmd_tx[PLIN_EP_SIZE];
 static uint8_t plin_rx_tx[PLIN_CHANNELS][PLIN_RX_MSG_SIZE];
-
-volatile uint32_t plin_proto_debug[4];
-volatile uint8_t plin_proto_last_msg[PLIN_RX_MSG_SIZE];
-volatile uint8_t plin_proto_last_tx[PLIN_RX_MSG_SIZE];
 
 static void plin_send_raw( const uint8_t *data, uint16_t size )
 {
@@ -173,15 +167,11 @@ static void plin_kick_rx( uint8_t channel )
   if( USBD_LL_Transmit( pdev, ep, plin_rx_tx[channel], PLIN_RX_MSG_SIZE ) != USBD_OK )
   {
     pdev->ep_in[ep & 0x0F].total_length = 0;
-    plin_proto_debug[2]++;
     return;
   }
 
   chan->rx_tail = (uint8_t)( ( chan->rx_tail + 1 ) % PLIN_RX_QUEUE_LEN );
   chan->rx_count--;
-
-  plin_proto_debug[1]++;
-  memcpy( (void*)plin_proto_last_tx, plin_rx_tx[channel], PLIN_RX_MSG_SIZE );
 }
 
 void plin_protocol_init( void )
@@ -236,9 +226,6 @@ void plin_protocol_report_msg( uint8_t channel, const uint8_t *msg, uint16_t siz
   memcpy( chan->rx_queue[chan->rx_head], msg, size );
   chan->rx_head = (uint8_t)( ( chan->rx_head + 1 ) % PLIN_RX_QUEUE_LEN );
   chan->rx_count++;
-
-  plin_proto_debug[0]++;
-  memcpy( (void*)plin_proto_last_msg, msg, size );
 }
 
 void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
