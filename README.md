@@ -29,13 +29,22 @@ USB 行为来自对真实 PLIN-USB 盒子的 USBPcap 抓包与 PLinApi 调用逐
 
 ## 编译与下载
 
-需要 GNU Arm Embedded Toolchain：
+需要 GNU Arm Embedded Toolchain。固件通过编译宏区分两种设备身份/协议：
+
+| 目标 | 身份 | USB | CAN 协议 | LIN |
+|---|---|---|---|---|
+| `make usbcan_f072` | PCAN-USB Pro FD | `0C72:0011` 复合设备（2 接口 / 12 端点） | SJA1000 命令协议 | PLIN |
+| `make usbcan_f072_sja1000` | 经典 PCAN-USB | `0C72:000C` 单接口（4 端点） | SJA1000 命令协议 | 无 |
+
+编译分支由 `Src/pcan_identity.h` 的 `PCAN_IDENTITY_PRO_FD` / `PCAN_IDENTITY_SJA1000` 控制，
+Makefile 中的两个目标分别传入对应宏。
 
 ```
-make usbcan_f072
+make usbcan_f072                # Pro FD 身份，产物在 build-usbcan_f072/
+make usbcan_f072_sja1000        # 经典 PCAN-USB 身份，产物在 build-usbcan_f072_sja1000/
 ```
 
-产物在 `build-usbcan_f072/`：`.elf` / `.hex` / `.bin`。
+产物为 `.elf` / `.hex` / `.bin`。
 
 使用 WCH-Link/DAPLink 下载（Keil STM32F0xx DFP pack）：
 
@@ -54,7 +63,7 @@ Restart-Service -Name 'PLIN Manager' -Force
 
 | 上位机 | 接口 | 状态 |
 |---|---|---|
-| PCAN-View | CAN (MI_00) | 不可用：仍是 PCAN-USB 的 SJA1000 协议，Pro FD 身份下驱动报错 10 |
+| PCAN-View | CAN (MI_00) | Pro FD 身份下不可用（驱动报错 10）；经典身份固件 `usbcan_f072_sja1000` 可被 PCAN-USB 驱动识别 |
 | PLIN-View Pro 3.1.x | LIN (MI_01) | 枚举/连接/初始化/帧表/调度/状态通过；RX 投递待解决 |
 
 ## 已知问题 / 待办

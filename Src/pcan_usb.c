@@ -7,20 +7,26 @@
 #include "pcan_protocol.h"
 #include "pcan_led.h"
 #include "pcan_usb.h"
+#include "pcan_identity.h"
+#if PCAN_USE_PLIN
 #include "plin_protocol.h"
+#endif
 
 USBD_HandleTypeDef hUsbDeviceFS;
 extern USBD_DescriptorsTypeDef FS_Desc;
 static struct t_class_data pcan_data = { 0 };
 
-/* PCAN-USB Pro FD 复合设备：MI_00=CAN（6 端点），MI_01=LIN（6 端点） */
+/* PCAN-USB Pro FD 复合设备：MI_00=CAN（6 端点），MI_01=LIN（6 端点）
+ * PCAN-USB 经典设备：仅 MI_00=CAN（4 端点），不描述 LIN 接口 */
 struct t_peak_description
 {
   USB_CONFIGURATION_DESCRIPTOR con0;
   USB_INTERFACE_DESCRIPTOR     if0;
-  USB_ENDPOINT_DESCRIPTOR      if0_ep[6];
+  USB_ENDPOINT_DESCRIPTOR      if0_ep[PCAN_CAN_EP_COUNT];
+#if PCAN_USE_PLIN
   USB_INTERFACE_DESCRIPTOR     if1;
   USB_ENDPOINT_DESCRIPTOR      if1_ep[6];
+#endif
 };
 
 __ALIGN_BEGIN static const USB_DEVICE_QUALIFIER_DESCRIPTOR dev_qua __ALIGN_END = 
@@ -43,7 +49,7 @@ __ALIGN_BEGIN static struct t_peak_description peak_usb_dev __ALIGN_END =
     .bLength              = sizeof( USB_CONFIGURATION_DESCRIPTOR ),
     .bDescriptorType      = USB_CONFIGURATION_DESCRIPTOR_TYPE,
     .wTotalLength         = sizeof( struct t_peak_description ), 
-    .bNumInterfaces       = 2,
+    .bNumInterfaces       = PCAN_USB_IFACE_COUNT,
     .bConfigurationValue  = 1,
     .iConfiguration       = 4,
     .bmAttributes         = USB_CONFIG_BUS_POWERED,
@@ -112,6 +118,7 @@ __ALIGN_BEGIN static struct t_peak_description peak_usb_dev __ALIGN_END =
       .bInterval          = 0,
     },
   },
+#if PCAN_USE_PLIN
   .if1 =
   {
     .bLength              = sizeof( USB_INTERFACE_DESCRIPTOR ),
@@ -175,6 +182,7 @@ __ALIGN_BEGIN static struct t_peak_description peak_usb_dev __ALIGN_END =
       .bInterval          = 0,
     },
   },
+#endif
 };
 
 static uint8_t *peak_ep_out_buffer( uint8_t epnum )
@@ -184,10 +192,39 @@ static uint8_t *peak_ep_out_buffer( uint8_t epnum )
     case PCAN_USB_EP_CMDOUT: return pcan_data.buffer_cmd;
     case PCAN_USB_EP_MSGOUT: return pcan_data.buffer_data;
     case PCAN_USB_EP_MSG1OUT: return pcan_data.buffer_data1;
+#if PCAN_USE_PLIN
     case PLIN_EP_CMDOUT: return pcan_data.buffer_lin_cmd;
     case PLIN_EP_DATA0OUT: return pcan_data.buffer_lin_data0;
     case PLIN_EP_DATA1OUT: return pcan_data.buffer_lin_data1;
+#endif
     default: return 0;
+  }
+}
+
+static void device_ep_list_set( USBD_HandleTypeDef *pdev,
+                                const USB_ENDPOINT_DESCRIPTOR *eps,
+                                uint8_t count, uint8_t open )
+{
+  for( uint8_t i = 0; i < count; i++ )
+  {
+    uint8_t ep_addr = eps[i].bEndpointAddress;
+
+    if( open )
+    {
+      USBD_LL_OpenEP( pdev, ep_addr, eps[i].bmAttributes, eps[i].wMaxPacketSize );
+      if( ( ep_addr & 0x80 ) != 0 )
+        pdev->ep_in[ep_addr & EP_ADDR_MSK].is_used = 1;
+      else
+        pdev->ep_out[ep_addr & EP_ADDR_MSK].is_used = 1;
+    }
+    else
+    {
+      USBD_LL_CloseEP( pdev, ep_addr );
+      if( ( ep_addr & 0x80 ) != 0 )
+        pdev->ep_in[ep_addr & EP_ADDR_MSK].is_used = 0;
+      else
+        pdev->ep_out[ep_addr & EP_ADDR_MSK].is_used = 0;
+    }
   }
 }
 
@@ -195,24 +232,10 @@ static uint8_t device_init( USBD_HandleTypeDef *pdev, uint8_t cfgidx )
 {
   UNUSED( cfgidx );
 
-  for( int i = 0; i < 2; i++ )
-  {
-    USB_ENDPOINT_DESCRIPTOR const *p_ep = ( i == 0 ) ? peak_usb_dev.if0_ep : peak_usb_dev.if1_ep;
-
-    for( int j = 0; j < 6; j++ )
-    {
-      uint8_t ep_addr = p_ep[j].bEndpointAddress;
-
-      USBD_LL_OpenEP( pdev, ep_addr,
-                            p_ep[j].bmAttributes,
-                            p_ep[j].wMaxPacketSize );
-
-      if( ( ep_addr & 0x80 ) != 0 )
-        pdev->ep_in[ep_addr & EP_ADDR_MSK].is_used = 1;
-      else
-        pdev->ep_out[ep_addr & EP_ADDR_MSK].is_used = 1;
-    }
-  }
+  device_ep_list_set( pdev, peak_usb_dev.if0_ep, PCAN_CAN_EP_COUNT, 1 );
+#if PCAN_USE_PLIN
+  device_ep_list_set( pdev, peak_usb_dev.if1_ep, 6, 1 );
+#endif
 
   pdev->pClassData = (void*)&pcan_data;
 
@@ -223,7 +246,9 @@ static uint8_t device_init( USBD_HandleTypeDef *pdev, uint8_t cfgidx )
     {
       PCAN_USB_EP_CMDOUT,
       PCAN_USB_EP_MSGOUT,
+#if PCAN_USE_PLIN
       PLIN_EP_CMDOUT,
+#endif
     };
 
     for( uint8_t i = 0; i < sizeof( out_eps ); i++ )
@@ -240,21 +265,10 @@ static uint8_t device_deinit( USBD_HandleTypeDef *pdev, uint8_t cfgidx )
 {
   UNUSED( cfgidx );
 
-  for( int i = 0; i < 2; i++ )
-  {
-    USB_ENDPOINT_DESCRIPTOR const *p_ep = ( i == 0 ) ? peak_usb_dev.if0_ep : peak_usb_dev.if1_ep;
-
-    for( int j = 0; j < 6; j++ )
-    {
-      uint8_t ep_addr = p_ep[j].bEndpointAddress;
-
-      USBD_LL_CloseEP( pdev, ep_addr );
-      if( ( ep_addr & 0x80 ) != 0 )
-        pdev->ep_in[ep_addr & EP_ADDR_MSK].is_used = 0;
-      else
-        pdev->ep_out[ep_addr & EP_ADDR_MSK].is_used = 0;
-    }
-  }
+  device_ep_list_set( pdev, peak_usb_dev.if0_ep, PCAN_CAN_EP_COUNT, 0 );
+#if PCAN_USE_PLIN
+  device_ep_list_set( pdev, peak_usb_dev.if1_ep, 6, 0 );
+#endif
 
   pdev->pClassData = (void*)0;
   return USBD_OK;
@@ -362,10 +376,12 @@ static uint8_t device_data_in( USBD_HandleTypeDef *pdev, uint8_t epnum )
   pdev->ep_in[epnum].total_length = 0U;
   p_data->ep_tx_in_use[epnum] = 0;
 
+#if PCAN_USE_PLIN
   if( epnum == ( PLIN_EP_DATA0IN & 0x0F ) )
     plin_protocol_on_tx_done( 0 );
   else if( epnum == ( PLIN_EP_DATA1IN & 0x0F ) )
     plin_protocol_on_tx_done( 1 );
+#endif
 
   return USBD_OK;
 }
@@ -389,9 +405,11 @@ static uint8_t device_data_out( USBD_HandleTypeDef *pdev, uint8_t epnum )
     case PCAN_USB_EP_MSGOUT:
       pcan_protocol_process_data( pcan_data.buffer_data, (uint16_t)size );
       break;
+#if PCAN_USE_PLIN
     case PLIN_EP_CMDOUT:
       plin_protocol_process_command( pcan_data.buffer_lin_cmd, (uint16_t)size );
       break;
+#endif
     default:
       /* 0x03/0x05/0x06 预留数据通道，丢弃 */
       break;

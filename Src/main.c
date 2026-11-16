@@ -4,8 +4,11 @@
 #include "pcan_protocol.h"
 #include "pcan_usb.h"
 #include "pcan_varian.h"
+#include "pcan_identity.h"
+#if PCAN_USE_PLIN
 #include "plin_protocol.h"
 #include "plin_lin.h"
+#endif
 
 void HAL_MspInit( void )
 {
@@ -97,8 +100,10 @@ int main( void )
   pcan_led_init();
   pcan_timestamp_init();
   pcan_protocol_init();
+#if PCAN_USE_PLIN
   plin_protocol_init();
   plin_lin_init();
+#endif
 
   pcan_led_set_mode( LED_CH0_RX, LED_MODE_BLINK_SLOW, 0 );
   pcan_led_set_mode( LED_CH0_TX, LED_MODE_BLINK_SLOW, 0 );
@@ -108,7 +113,9 @@ int main( void )
     pcan_usb_poll();
     pcan_led_poll();
     pcan_protocol_poll();
+#if PCAN_USE_PLIN
     plin_protocol_poll();
     plin_lin_poll();
+#endif
   }
 }

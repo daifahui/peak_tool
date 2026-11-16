@@ -1,9 +1,10 @@
 #include "usbd_core.h"
 #include "usbd_conf.h"
+#include "pcan_identity.h"
 
-/* PEAK PCAN-USB Pro FD 身份：VID/PID 与双接口复合设备 */
-#define USBD_VID                    0x0C72
-#define USBD_PID_FS                 0x0011
+/* PEAK 设备身份由 pcan_identity.h 的编译分支决定 */
+#define USBD_VID                    PCAN_USB_VID
+#define USBD_PID_FS                 PCAN_USB_PID
 #define USBD_LANGID_STRING          1033
 #define USBD_MAX_STR_DESC_SIZ       0x100U
 
@@ -51,6 +52,7 @@ __ALIGN_BEGIN static const uint8_t usbd_mfc_desc[] __ALIGN_END =
   'P', 0, 'E', 0, 'A', 0, 'K', 0, '-', 0, 'S', 0, 'y', 0, 's', 0, 't', 0, 'e', 0, 'm', 0
 };
 
+#if PCAN_USE_PLIN
 /* "PCAN-USB Pro FD" */
 __ALIGN_BEGIN static const uint8_t usbd_product_desc[] __ALIGN_END =
 {
@@ -58,6 +60,14 @@ __ALIGN_BEGIN static const uint8_t usbd_product_desc[] __ALIGN_END =
   'P', 0, 'C', 0, 'A', 0, 'N', 0, '-', 0, 'U', 0, 'S', 0, 'B', 0,
   ' ', 0, 'P', 0, 'r', 0, 'o', 0, ' ', 0, 'F', 0, 'D', 0
 };
+#else
+/* "PCAN-USB" */
+__ALIGN_BEGIN static const uint8_t usbd_product_desc[] __ALIGN_END =
+{
+  0x12, USB_DESC_TYPE_STRING,
+  'P', 0, 'C', 0, 'A', 0, 'N', 0, '-', 0, 'U', 0, 'S', 0, 'B', 0
+};
+#endif
 
 /* "00000001" */
 __ALIGN_BEGIN static const uint8_t usbd_serial_desc[] __ALIGN_END =
