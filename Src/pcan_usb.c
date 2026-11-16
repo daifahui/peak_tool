@@ -216,9 +216,21 @@ static uint8_t device_init( USBD_HandleTypeDef *pdev, uint8_t cfgidx )
 
   pdev->pClassData = (void*)&pcan_data;
 
-  for( uint8_t epnum = 1; epnum <= 6; epnum++ )
+  /* 只接收实际使用的 OUT 端点：CAN 命令/数据、LIN 命令。
+   * EP3/0x05/0x06 OUT 不使用，避免共享 PMA 缓冲被意外写入。 */
   {
-    USBD_LL_PrepareReceive( pdev, epnum, peak_ep_out_buffer( epnum ), PCAN_USB_EP_SIZE );
+    static const uint8_t out_eps[] =
+    {
+      PCAN_USB_EP_CMDOUT,
+      PCAN_USB_EP_MSGOUT,
+      PLIN_EP_CMDOUT,
+    };
+
+    for( uint8_t i = 0; i < sizeof( out_eps ); i++ )
+    {
+      USBD_LL_PrepareReceive( pdev, out_eps[i],
+                              peak_ep_out_buffer( out_eps[i] ), PCAN_USB_EP_SIZE );
+    }
   }
 
   return USBD_OK;

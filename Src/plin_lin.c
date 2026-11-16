@@ -2,6 +2,7 @@
 #include "stm32f0xx_hal.h"
 #include "plin_lin.h"
 #include "plin_protocol.h"
+#include "pcan_usb.h"
 
 #define LIN_RX_RING_SIZE  128
 #define LIN_RX_RING_MASK  ( LIN_RX_RING_SIZE - 1 )
@@ -46,23 +47,52 @@ static struct lin_channel lin_channels[2] =
   { .usart = USART2 },
 };
 
-static void lin_putc( struct lin_channel *chan, uint8_t data )
+volatile uint32_t plin_lin_debug[8];
+
+static int lin_wait_flag( struct lin_channel *chan, uint32_t flag, uint32_t timeout_ms )
 {
-  while( ( chan->usart->ISR & USART_ISR_TXE ) == 0 )
-    ;
+  uint32_t start = HAL_GetTick();
+
+  while( ( chan->usart->ISR & flag ) == 0 )
+  {
+    /* LIN 发送是阻塞的，期间保持 USB 命令/异步管道有人服务 */
+    pcan_usb_poll();
+
+    if( ( HAL_GetTick() - start ) > timeout_ms )
+    {
+      plin_lin_debug[2]++;
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static void lin_delay_ms( uint32_t ms )
+{
+  uint32_t start = HAL_GetTick();
+
+  while( ( HAL_GetTick() - start ) < ms )
+    pcan_usb_poll();
+}
+
+static int lin_putc( struct lin_channel *chan, uint8_t data )
+{
+  if( !lin_wait_flag( chan, USART_ISR_TXE, 5 ) )
+    return 0;
   chan->usart->TDR = data;
+  return 1;
 }
 
-static void lin_wait_tc( struct lin_channel *chan )
+static int lin_wait_tc( struct lin_channel *chan )
 {
-  while( ( chan->usart->ISR & USART_ISR_TC ) == 0 )
-    ;
+  return lin_wait_flag( chan, USART_ISR_TC, 10 );
 }
 
-static void lin_send_break( struct lin_channel *chan )
+static int lin_send_break( struct lin_channel *chan )
 {
+  plin_lin_debug[6]++;
   chan->usart->RQR = USART_RQR_SBKRQ;
-  lin_wait_tc( chan );
+  return lin_wait_tc( chan );
 }
 
 static void lin_flush_rx( struct lin_channel *chan )
@@ -128,7 +158,15 @@ static void lin_report( struct lin_channel *chan, uint8_t pid, uint8_t length,
   uint8_t msg[PLIN_RX_MSG_SIZE] = { 0 };
   uint32_t ts = HAL_GetTick() * 1000u;
 
-  msg[0]  = 0; /* RX_MSG */
+  (void)checksum;
+
+  if( length > 8 )
+    length = 8;
+
+  /* 36 字节线格式（USBPcap 实测）：
+   * +0 type, +1 seq(u16), +8 PID, +9 len, +10 dir, +11 checksum type,
+   * +16 error flags, +18 checksum(恒 0), +20 timestamp(u32 µs), +28 data[8] */
+  msg[0]  = 0;
   msg[1]  = (uint8_t)( chan->sequence & 0xFF );
   msg[2]  = (uint8_t)( chan->sequence >> 8 );
   chan->sequence++;
@@ -139,14 +177,12 @@ static void lin_report( struct lin_channel *chan, uint8_t pid, uint8_t length,
   msg[11] = checksum_type;
   msg[16] = (uint8_t)( error_flags & 0xFF );
   msg[17] = (uint8_t)( error_flags >> 8 );
-  msg[18] = checksum;
+  msg[18] = 0;
   msg[20] = (uint8_t)( ts & 0xFF );
   msg[21] = (uint8_t)( ( ts >> 8 ) & 0xFF );
   msg[22] = (uint8_t)( ( ts >> 16 ) & 0xFF );
   msg[23] = (uint8_t)( ( ts >> 24 ) & 0xFF );
 
-  if( length > 8 )
-    length = 8;
   if( data )
     memcpy( &msg[28], data, length );
 
@@ -163,19 +199,31 @@ static void lin_master_frame( struct lin_channel *chan, uint8_t id, const uint8_
   uint8_t data[8] = { 0 };
   uint8_t checksum = 0;
   uint16_t error = 0;
+  int tx_ok;
 
   if( direction == 0 )
     return;
   if( length > 8 )
     length = 8;
 
+  plin_lin_debug[0]++;
+  plin_lin_debug[3] = pid;
+  plin_lin_debug[4] = length;
+
   chan->usart->CR1 &= ~USART_CR1_RXNEIE;
   lin_flush_rx( chan );
 
-  lin_send_break( chan );
-  lin_putc( chan, 0x55 );
-  lin_putc( chan, pid );
-  lin_wait_tc( chan );
+  tx_ok = lin_send_break( chan ) &&
+          lin_putc( chan, 0x55 ) &&
+          lin_putc( chan, pid ) &&
+          lin_wait_tc( chan );
+
+  if( !tx_ok )
+  {
+    error = 0x0010;
+    length = 0;
+    goto finish;
+  }
 
   if( direction == 1 && ( flags & 0x0001 ) )
   {
@@ -183,9 +231,23 @@ static void lin_master_frame( struct lin_channel *chan, uint8_t id, const uint8_
     checksum = lin_checksum( id, pid, checksum_type, data, length );
 
     for( uint8_t i = 0; i < length; i++ )
-      lin_putc( chan, data[i] );
-    lin_putc( chan, checksum );
-    lin_wait_tc( chan );
+    {
+      if( !lin_putc( chan, data[i] ) )
+      {
+        tx_ok = 0;
+        break;
+      }
+    }
+    if( tx_ok )
+      tx_ok = lin_putc( chan, checksum );
+    if( tx_ok )
+      tx_ok = lin_wait_tc( chan );
+
+    if( !tx_ok )
+    {
+      error = 0x0010;
+      length = 0;
+    }
   }
   else if( direction == 1 )
   {
@@ -200,11 +262,13 @@ static void lin_master_frame( struct lin_channel *chan, uint8_t id, const uint8_
     uint32_t start = HAL_GetTick();
     uint32_t timeout = (uint32_t)( 5 + length * 2 );
 
-    HAL_Delay( 1 );
+    lin_delay_ms( 1 );
     lin_flush_rx( chan );
 
     while( count < (uint8_t)( length + 1 ) )
     {
+      pcan_usb_poll();
+
       if( chan->usart->ISR & USART_ISR_RXNE )
       {
         rx[count++] = (uint8_t)chan->usart->RDR;
@@ -228,10 +292,13 @@ static void lin_master_frame( struct lin_channel *chan, uint8_t id, const uint8_
     }
   }
 
-  HAL_Delay( 1 );
+finish:
+  lin_delay_ms( 1 );
   lin_flush_rx( chan );
   chan->usart->CR1 |= USART_CR1_RXNEIE;
 
+  plin_lin_debug[7] = HAL_GetTick();
+  plin_lin_debug[1]++;
   lin_report( chan, pid, length, direction, checksum_type, error, checksum, data );
 }
 
@@ -279,6 +346,8 @@ static void lin_send_slave_response( struct lin_channel *chan, uint8_t id, const
   uint8_t pid = lin_pid( id );
   uint8_t data[8] = { 0 };
   uint8_t checksum;
+  uint16_t error = 0;
+  int tx_ok = 1;
 
   if( length > 8 )
     length = 8;
@@ -288,14 +357,26 @@ static void lin_send_slave_response( struct lin_channel *chan, uint8_t id, const
 
   chan->usart->CR1 &= ~USART_CR1_RXNEIE;
   for( uint8_t i = 0; i < length; i++ )
-    lin_putc( chan, data[i] );
-  lin_putc( chan, checksum );
-  lin_wait_tc( chan );
-  HAL_Delay( 1 );
+  {
+    if( !lin_putc( chan, data[i] ) )
+    {
+      tx_ok = 0;
+      break;
+    }
+  }
+  if( tx_ok )
+    tx_ok = lin_putc( chan, checksum );
+  if( tx_ok )
+    tx_ok = lin_wait_tc( chan );
+  if( !tx_ok )
+    error = 0x0010;
+
+  lin_delay_ms( 1 );
   lin_flush_rx( chan );
   chan->usart->CR1 |= USART_CR1_RXNEIE;
 
-  lin_report( chan, pid, length, 1, checksum_type, 0, checksum, data );
+  plin_lin_debug[5]++;
+  lin_report( chan, pid, tx_ok ? length : 0, 1, checksum_type, error, checksum, data );
 }
 
 static void lin_slave_poll( struct lin_channel *chan )
@@ -461,6 +542,7 @@ void plin_lin_set_config( uint8_t channel, uint16_t baudrate, uint8_t mode )
   chan->baudrate = baudrate;
   chan->mode = mode;
   chan->active = 0;
+  chan->sequence = 0;
   chan->parse_state = LIN_PARSE_WAIT_BREAK;
   lin_usart_config( chan, baudrate );
 }
@@ -489,7 +571,7 @@ void plin_lin_send_wakeup( uint8_t channel )
   if( chan->mode == PLIN_LIN_MODE_NONE )
     return;
 
-  lin_send_break( chan );
+  (void)lin_send_break( chan );
 }
 
 void plin_lin_poll( void )

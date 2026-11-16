@@ -10,6 +10,10 @@
 #define PLIN_LIN_MODE_SLAVE  1
 #define PLIN_LIN_MODE_MASTER 2
 
+/* 调试计数：[0]主机帧调用 [1]主机帧完成 [2]发送超时 [3]最后 PID
+ * [4]最后长度 [5]从机应答 [6]break 发送 [7]最后帧时刻(ms) */
+extern volatile uint32_t plin_lin_debug[8];
+
 void plin_lin_init( void );
 void plin_lin_poll( void );
 void plin_lin_set_config( uint8_t channel, uint16_t baudrate, uint8_t mode );

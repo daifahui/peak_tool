@@ -13,6 +13,11 @@
 #define PLIN_CHANNELS     2
 #define PLIN_RX_MSG_SIZE  36
 
+/* 调试计数：[0]上报调用 [1]异步发送次数 [2]发送失败 [3]队列溢出 */
+extern volatile uint32_t plin_proto_debug[4];
+extern volatile uint8_t plin_proto_last_msg[PLIN_RX_MSG_SIZE];
+extern volatile uint8_t plin_proto_last_tx[PLIN_RX_MSG_SIZE];
+
 void plin_protocol_init( void );
 void plin_protocol_poll( void );
 void plin_protocol_process_command( const uint8_t *buf, uint16_t size );
