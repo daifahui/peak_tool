@@ -6,28 +6,29 @@
 /* 调度表存储布局（2 个 2 KB 页，一页一张表）：
  *   0x0801F000 + n*0x800 : 表头（32 B）
  *   +32                  : 64 帧 × 16 B = 1024 B
- *   +1056                : 8 槽 × 16 B = 128 B
- * 合计 1184 B < 2048 B，剩余空间留作后续扩展。 */
+ *   +1056                : 2 调度 × 8 槽 × 16 B = 256 B
+ * 合计 1312 B < 2048 B，剩余空间留作后续扩展。 */
 
 #define PLIN_STORE_BASE       0x0801F000u
 #define PLIN_STORE_PAGE_SIZE  0x800u
 #define PLIN_STORE_MAGIC      0x534E494Cu  /* "LINS" */
-#define PLIN_STORE_VERSION    1u
+#define PLIN_STORE_VERSION    2u
 
 #define STORE_FRAMES_SIZE ( PLIN_MAX_FRAMES * PLIN_FRAME_ENTRY_SIZE )
-#define STORE_SLOTS_SIZE  ( PLIN_MAX_SLOTS * PLIN_FRAME_ENTRY_SIZE )
+#define STORE_SLOTS_SIZE  ( PLIN_MAX_SCHEDULES * PLIN_MAX_SLOTS * PLIN_FRAME_ENTRY_SIZE )
 
 struct plin_store_header
 {
   uint32_t magic;
   uint16_t version;
   uint16_t baudrate;
-  uint16_t slot_count;
+  uint8_t  slot_count[PLIN_MAX_SCHEDULES];
   uint16_t frame_count;
   uint8_t  mode;
   uint8_t  autostart;
+  uint8_t  active_schedule;
   uint8_t  valid[PLIN_MAX_FRAMES / 8];
-  uint8_t  reserved[4];
+  uint8_t  reserved[2];
   uint32_t crc;
 };
 
@@ -199,7 +200,8 @@ int plin_store_save( uint8_t table, uint8_t autostart )
   hdr.magic = PLIN_STORE_MAGIC;
   hdr.version = PLIN_STORE_VERSION;
   hdr.baudrate = store_cfg.baudrate;
-  hdr.slot_count = store_cfg.slot_count;
+  memcpy( hdr.slot_count, store_cfg.slot_count, sizeof( hdr.slot_count ) );
+  hdr.active_schedule = store_cfg.active_schedule;
   hdr.mode = store_cfg.mode;
   hdr.autostart = autostart ? 1 : 0;
 
@@ -254,7 +256,8 @@ int plin_store_load( uint8_t table, uint8_t start )
   for( uint8_t i = 0; i < PLIN_MAX_FRAMES; i++ )
     store_cfg.frame_valid[i] = ( hdr->valid[i >> 3] & ( 1u << ( i & 7 ) ) ) ? 1 : 0;
 
-  store_cfg.slot_count = hdr->slot_count;
+  memcpy( store_cfg.slot_count, hdr->slot_count, sizeof( store_cfg.slot_count ) );
+  store_cfg.active_schedule = hdr->active_schedule % PLIN_MAX_SCHEDULES;
   store_cfg.baudrate = hdr->baudrate;
   store_cfg.mode = hdr->mode;
 
@@ -296,7 +299,12 @@ void plin_store_info( uint8_t *info )
       info[0 + table] = 1;
       info[2 + table] = hdr->autostart;
       info[4 + table] = hdr->mode;
-      info[6 + table] = ( hdr->slot_count > PLIN_MAX_SLOTS ) ? PLIN_MAX_SLOTS : (uint8_t)hdr->slot_count;
+      {
+        uint8_t sched = (uint8_t)( hdr->active_schedule % PLIN_MAX_SCHEDULES );
+        uint8_t count = hdr->slot_count[sched];
+
+        info[6 + table] = ( count > PLIN_MAX_SLOTS ) ? PLIN_MAX_SLOTS : count;
+      }
     }
   }
 }

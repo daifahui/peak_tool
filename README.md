@@ -79,13 +79,21 @@ Restart-Service -Name 'PLIN Manager' -Force
 ### Flash 离线调度表
 
 - 链接脚本把末尾 4 KB（`0x0801F000`–`0x0801FFFF`，2 个 2 KB 页）留给调度表，每通道一页。
-- 单表有效载荷 1184 B（表头 32 B + 64 帧 × 16 B + 8 槽 × 16 B），2 KB 页余量约 40%，空间足够。
-- 表头含 magic/version/波特率/模式/帧数/有效位图/autostart，整表 CRC32 校验；掉电写入半途的表会被判为无效。
+- 单表有效载荷 1312 B（表头 32 B + 64 帧 × 16 B + 2 调度 × 8 槽 × 16 B），2 KB 页余量约 36%，空间足够。
+- 表头含 magic/version/波特率/模式/帧数/有效位图/active_schedule/autostart，整表 CRC32 校验；掉电写入半途的表会被判为无效。
 - 上电时 `plin_store_init()` 自动校验并把有效表载入对应通道；`autostart=1` 的表立即启动调度，无需上位机。
 - 自定义命令（PEAK 未占用区间）：
   - `0x30 STORE_SCHEDULE`：`+4`=表号(0/1)，`+5`=autostart，保存当前通道配置。
   - `0x31 LOAD_SCHEDULE`：`+4`=表号，载入并立即启动。
   - `0x32 GET_SCHEDULE_INFO`：返回 8 字节 `[valid0][valid1][auto0][auto1][mode0][mode1][slots0][slots1]`。
+  - `0x33 SELECT_SCHEDULE`：`+4`=调度号(0/1)，切换当前通道的活动/构建调度表。
+
+### 多调度表与 KeepAlive
+
+- 每通道 2 张调度表（各 8 槽）；`ADD_SLOT` 写入当前构建表，`START/RESUME` 启动活动表，
+  `GET_SLOT_COUNT/GET_SLOT` 读取活动表；`DELETE_SCHEDULE` 清空两表并停止。
+- KeepAlive：`0x0D SET_KEEPALIVE`（`+4`=使能，`+5..6`=周期 ms），`0x0E GET_KEEPALIVE`，
+  `0x0F TRIGGER_KEEPALIVE` 立即发送唤醒脉冲；周期唤醒由主循环按 ms 检查，不占用中断。
 
 ## 已知问题 / 待办
 
@@ -100,10 +108,10 @@ Restart-Service -Name 'PLIN Manager' -Force
 ### LIN / PLIN 功能
 
 - 未接 LIN 收发器，主/从实际总线收发未验证；主机端 1 kΩ 终端电阻和 12 V VBAT 未接。
-- 当前仅支持单个调度表（忽略 scheduleIndex 0..7）；`GET_SLOT (0x13)` 已实现，`SET_SCHEDULE_BREAK (0x14)` 未实现。
-- 未实现：`START_AUTOBAUD (0x04)`、`SET_HW_NAME (0x09)`、KeepAlive（`0x0D`-`0x0F`）、
-  `GET_HARDWARE_VERSION (0x25)`、`GET_TARGET_TIME (0x26)`、`RESPONSE_REMAP` 生效、
-  `LEDS_ON_OFF (0x28)`、`BREAK_LEN (0x29)` / `TERMINATION (0x2A)`、高级从机/Flash 模式命令。
+- 每通道 2 张调度表（`SELECT_SCHEDULE 0x33` 切换）；`GET_SLOT (0x13)` 已实现，`SET_SCHEDULE_BREAK (0x14)` 未实现。
+- 未实现：`START_AUTOBAUD (0x04)`、`SET_HW_NAME (0x09)`、`GET_HARDWARE_VERSION (0x25)`、
+  `GET_TARGET_TIME (0x26)`、`RESPONSE_REMAP` 生效、`LEDS_ON_OFF (0x28)`、
+  `BREAK_LEN (0x29)` / `TERMINATION (0x2A)`、高级从机/Flash 模式命令。
 - `SET_ID_FILTER` 只保存未生效；从机应答重映射未实现。
 - 错误位映射需修正：校验错误应为 `0x020`，当前从机路径用了 `0x004`；同步/奇偶校验未检查。
 - 时间戳使用 TIM2 1 MHz 自由运行计数器（32 位 µs，无中断，约 71.6 分钟回绕）。

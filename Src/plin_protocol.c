@@ -1,4 +1,5 @@
 #include <string.h>
+#include "stm32f0xx_hal.h"
 #include "plin_protocol.h"
 #include "plin_lin.h"
 #include "plin_store.h"
@@ -22,6 +23,9 @@ enum
   PLIN_CMD_GET_HW_NAME       = 0x0A,
   PLIN_CMD_IDENTIFY_HW       = 0x0B,
   PLIN_CMD_GET_FW_VERSION    = 0x0C,
+  PLIN_CMD_SET_KEEPALIVE     = 0x0D,
+  PLIN_CMD_GET_KEEPALIVE     = 0x0E,
+  PLIN_CMD_TRIGGER_KEEPALIVE = 0x0F,
   PLIN_CMD_ADD_SLOT          = 0x10,
   PLIN_CMD_DELETE_SCHEDULE   = 0x11,
   PLIN_CMD_GET_SLOT_COUNT    = 0x12,
@@ -40,10 +44,11 @@ enum
   PLIN_CMD_BREAK_LEN         = 0x29,
   PLIN_CMD_TERMINATION       = 0x2A,
 
-  /* 项目自定义命令：Flash 调度表存储/加载（PEAK 未占用 0x30-0x32） */
+  /* 项目自定义命令：Flash 调度表存储/加载/切换（PEAK 未占用 0x30-0x33） */
   PLIN_CMD_STORE_SCHEDULE    = 0x30,
   PLIN_CMD_LOAD_SCHEDULE     = 0x31,
   PLIN_CMD_GET_SCHEDULE_INFO = 0x32,
+  PLIN_CMD_SELECT_SCHEDULE   = 0x33,
 };
 
 enum
@@ -69,9 +74,15 @@ struct plin_channel
   uint8_t  frame_valid[PLIN_MAX_FRAMES];
   struct plin_frame_entry frames[PLIN_MAX_FRAMES];
 
-  uint8_t  slot_count;
+  uint8_t  slot_count[PLIN_MAX_SCHEDULES];
+  uint8_t  active_schedule;
+  uint8_t  build_schedule;
   uint8_t  schedule_active;
-  uint8_t  slots[PLIN_MAX_SLOTS][PLIN_FRAME_ENTRY_SIZE];
+  uint8_t  slots[PLIN_MAX_SCHEDULES][PLIN_MAX_SLOTS][PLIN_FRAME_ENTRY_SIZE];
+
+  uint8_t  keepalive_enable;
+  uint16_t keepalive_interval;
+  uint32_t keepalive_next_ms;
 
   uint16_t rx_overrun;
   uint8_t  rx_head;
@@ -124,8 +135,12 @@ static void plin_reset_config( struct plin_channel *chan )
 {
   chan->mode = PLIN_MODE_NONE;
   chan->baudrate = 0;
-  chan->slot_count = 0;
+  memset( chan->slot_count, 0, sizeof( chan->slot_count ) );
+  chan->active_schedule = 0;
+  chan->build_schedule = 0;
   chan->schedule_active = 0;
+  chan->keepalive_enable = 0;
+  chan->keepalive_interval = 0;
   memset( chan->filter, 0, sizeof( chan->filter ) );
   memset( chan->frame_valid, 0, sizeof( chan->frame_valid ) );
   memset( chan->frames, 0, sizeof( chan->frames ) );
@@ -176,6 +191,19 @@ void plin_protocol_init( void )
 
 void plin_protocol_poll( void )
 {
+  /* KeepAlive：按配置周期发送 LIN 唤醒脉冲，与调度表独立 */
+  for( uint8_t ch = 0; ch < PLIN_CHANNELS; ch++ )
+  {
+    struct plin_channel *chan = &plin_channels[ch];
+
+    if( chan->keepalive_enable && chan->mode != PLIN_MODE_NONE &&
+        (int32_t)( HAL_GetTick() - chan->keepalive_next_ms ) >= 0 )
+    {
+      chan->keepalive_next_ms = HAL_GetTick() + chan->keepalive_interval;
+      plin_lin_send_wakeup( ch );
+    }
+  }
+
   plin_kick_rx( 0 );
   plin_kick_rx( 1 );
 }
@@ -304,15 +332,48 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       break;
     }
 
+    case PLIN_CMD_SET_KEEPALIVE:
+      if( size >= 8 )
+      {
+        chan->keepalive_interval = (uint16_t)( buf[5] | ( buf[6] << 8 ) );
+        if( chan->keepalive_interval < 10 )
+          chan->keepalive_interval = 10;
+        chan->keepalive_enable = buf[4] ? 1 : 0;
+        chan->keepalive_next_ms = HAL_GetTick() + chan->keepalive_interval;
+        plin_send_raw( buf, 8 );
+      }
+      break;
+
+    case PLIN_CMD_GET_KEEPALIVE:
+    {
+      uint8_t rsp[4];
+
+      rsp[0] = chan->keepalive_enable;
+      rsp[1] = (uint8_t)( chan->keepalive_interval & 0xFF );
+      rsp[2] = (uint8_t)( chan->keepalive_interval >> 8 );
+      rsp[3] = 0;
+      plin_reply( buf, rsp, sizeof( rsp ) );
+      break;
+    }
+
+    case PLIN_CMD_TRIGGER_KEEPALIVE:
+      if( size >= 8 )
+      {
+        plin_lin_send_wakeup( channel );
+        plin_send_raw( buf, 8 );
+      }
+      break;
+
     case PLIN_CMD_ADD_SLOT:
       if( size >= 24 )
       {
         uint8_t rsp[32];
+        uint8_t sched = (uint8_t)( chan->build_schedule % PLIN_MAX_SCHEDULES );
 
-        if( chan->slot_count < PLIN_MAX_SLOTS )
+        if( chan->slot_count[sched] < PLIN_MAX_SLOTS )
         {
-          memcpy( chan->slots[chan->slot_count], &buf[8], PLIN_FRAME_ENTRY_SIZE );
-          chan->slot_count++;
+          memcpy( chan->slots[sched][chan->slot_count[sched]], &buf[8], PLIN_FRAME_ENTRY_SIZE );
+          chan->slot_count[sched]++;
         }
 
         memcpy( rsp, buf, 24 );
@@ -326,8 +387,10 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       {
         uint8_t rsp[20];
 
-        chan->slot_count = 0;
+        memset( chan->slot_count, 0, sizeof( chan->slot_count ) );
         chan->schedule_active = 0;
+        chan->active_schedule = 0;
+        chan->build_schedule = 0;
         memset( chan->slots, 0, sizeof( chan->slots ) );
         plin_protocol_set_schedule_active( channel, 0 );
 
@@ -339,7 +402,7 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
 
     case PLIN_CMD_GET_SLOT_COUNT:
     {
-      uint8_t count[4] = { chan->slot_count, 0, 0, 0 };
+      uint8_t count[4] = { chan->slot_count[chan->active_schedule], 0, 0, 0 };
       plin_reply( buf, count, sizeof( count ) );
       break;
     }
@@ -461,6 +524,28 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       break;
     }
 
+    case PLIN_CMD_SELECT_SCHEDULE:
+      if( size >= 8 )
+      {
+        uint8_t rsp[8];
+        uint8_t index = (uint8_t)( buf[4] % PLIN_MAX_SCHEDULES );
+        uint8_t was_active = chan->schedule_active;
+
+        if( was_active )
+          plin_protocol_set_schedule_active( channel, 0 );
+
+        chan->active_schedule = index;
+        chan->build_schedule = index;
+
+        if( was_active )
+          plin_protocol_set_schedule_active( channel, 1 );
+
+        memcpy( rsp, buf, 8 );
+        rsp[4] = index;
+        plin_send_raw( rsp, sizeof( rsp ) );
+      }
+      break;
+
     case PLIN_CMD_XMT_WAKE_UP:
       plin_lin_send_wakeup( channel );
       break;
@@ -490,12 +575,18 @@ int plin_protocol_get_frame( uint8_t channel, uint8_t id, uint8_t *entry )
 
 int plin_protocol_get_slot( uint8_t channel, uint8_t index, uint8_t *slot )
 {
+  struct plin_channel *chan;
+  uint8_t sched;
+
   if( channel >= PLIN_CHANNELS || index >= PLIN_MAX_SLOTS || slot == 0 )
     return 0;
-  if( index >= plin_channels[channel].slot_count )
+
+  chan = &plin_channels[channel];
+  sched = (uint8_t)( chan->active_schedule % PLIN_MAX_SCHEDULES );
+  if( index >= chan->slot_count[sched] )
     return 0;
 
-  memcpy( slot, plin_channels[channel].slots[index], PLIN_FRAME_ENTRY_SIZE );
+  memcpy( slot, chan->slots[sched][index], PLIN_FRAME_ENTRY_SIZE );
   return 1;
 }
 
@@ -503,7 +594,9 @@ uint8_t plin_protocol_get_slot_count( uint8_t channel )
 {
   if( channel >= PLIN_CHANNELS )
     return 0;
-  return plin_channels[channel].slot_count;
+
+  return plin_channels[channel].slot_count[
+    plin_channels[channel].active_schedule % PLIN_MAX_SCHEDULES];
 }
 
 int plin_protocol_get_config( uint8_t channel, struct plin_config *cfg )
@@ -518,7 +611,8 @@ int plin_protocol_get_config( uint8_t channel, struct plin_config *cfg )
   memcpy( cfg->frames, chan->frames, sizeof( cfg->frames ) );
   memcpy( cfg->frame_valid, chan->frame_valid, sizeof( cfg->frame_valid ) );
   memcpy( cfg->slots, chan->slots, sizeof( cfg->slots ) );
-  cfg->slot_count = chan->slot_count;
+  memcpy( cfg->slot_count, chan->slot_count, sizeof( cfg->slot_count ) );
+  cfg->active_schedule = chan->active_schedule % PLIN_MAX_SCHEDULES;
   cfg->baudrate = chan->baudrate;
   cfg->mode = chan->mode;
 
@@ -541,7 +635,14 @@ int plin_protocol_set_config( uint8_t channel, const struct plin_config *cfg )
   memcpy( chan->frames, cfg->frames, sizeof( chan->frames ) );
   memcpy( chan->frame_valid, cfg->frame_valid, sizeof( chan->frame_valid ) );
   memcpy( chan->slots, cfg->slots, sizeof( chan->slots ) );
-  chan->slot_count = ( cfg->slot_count > PLIN_MAX_SLOTS ) ? PLIN_MAX_SLOTS : cfg->slot_count;
+  memcpy( chan->slot_count, cfg->slot_count, sizeof( chan->slot_count ) );
+  for( uint8_t i = 0; i < PLIN_MAX_SCHEDULES; i++ )
+  {
+    if( chan->slot_count[i] > PLIN_MAX_SLOTS )
+      chan->slot_count[i] = PLIN_MAX_SLOTS;
+  }
+  chan->active_schedule = cfg->active_schedule % PLIN_MAX_SCHEDULES;
+  chan->build_schedule = chan->active_schedule;
   chan->baudrate = baudrate;
   chan->mode = mode;
   chan->schedule_active = 0;

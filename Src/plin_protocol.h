@@ -15,15 +15,17 @@
 
 #define PLIN_MAX_FRAMES       64
 #define PLIN_MAX_SLOTS        8
+#define PLIN_MAX_SCHEDULES    2
 #define PLIN_FRAME_ENTRY_SIZE 16
 
-/* 一个通道的完整可持久化配置（帧表 + 调度槽 + 总线参数） */
+/* 一个通道的完整可持久化配置（帧表 + 双调度槽 + 总线参数） */
 struct plin_config
 {
   uint8_t  frames[PLIN_MAX_FRAMES][PLIN_FRAME_ENTRY_SIZE];
   uint8_t  frame_valid[PLIN_MAX_FRAMES];
-  uint8_t  slots[PLIN_MAX_SLOTS][PLIN_FRAME_ENTRY_SIZE];
-  uint8_t  slot_count;
+  uint8_t  slots[PLIN_MAX_SCHEDULES][PLIN_MAX_SLOTS][PLIN_FRAME_ENTRY_SIZE];
+  uint8_t  slot_count[PLIN_MAX_SCHEDULES];
+  uint8_t  active_schedule;
   uint16_t baudrate;
   uint8_t  mode;
 };
