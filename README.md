@@ -86,7 +86,7 @@ Restart-Service -Name 'PLIN Manager' -Force
   `LEDS_ON_OFF (0x28)`、`BREAK_LEN (0x29)` / `TERMINATION (0x2A)`、高级从机/Flash 模式命令。
 - `SET_ID_FILTER` 只保存未生效；从机应答重映射未实现。
 - 错误位映射需修正：校验错误应为 `0x020`，当前从机路径用了 `0x004`；同步/奇偶校验未检查。
-- 时间戳用 1 ms tick ×1000，分辨率 1 ms；未使用硬件 µs 计时器。
+- 时间戳使用 TIM2 1 MHz 自由运行计数器（32 位 µs，无中断，约 71.6 分钟回绕）。
 - 调试点 `plin_lin_debug` / `plin_proto_debug` 暂留，后续可移除或加宏开关。
 - F072 的 USB PMA 实际可用区约 `0x2FC`，EP3/EP6 OUT 与 EP2/EP5 共享缓冲；若后续使用 CAN2 需重新分配。
 

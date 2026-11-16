@@ -2,6 +2,7 @@
 #include <stm32f0xx_hal.h>
 
 #define TIM_BUS_FREQ (48000000)
+#define TIM_US_PRESCALER ( ( TIM_BUS_FREQ / 1000000u ) - 1u )
 
 void pcan_timestamp_init( void )
 {
@@ -18,6 +19,16 @@ void pcan_timestamp_init( void )
       TIM3->CR1 |= TIM_CLOCKDIVISION_DIV1;
       /* enable timer */
       TIM3->CR1 |= TIM_CR1_CEN;
+
+      /* TIM2: 32 位、1 MHz 自由运行计数器，用于 µs 时间戳。
+       * 不产生中断，需要时直接读 CNT；约 71.6 分钟回绕一次。 */
+      __HAL_RCC_TIM2_CLK_ENABLE();
+
+      TIM2->PSC = TIM_US_PRESCALER;
+      TIM2->CR1 = TIM_CLOCKDIVISION_DIV1;
+      TIM2->EGR = TIM_EGR_UG;      /* 立即装载预分频值 */
+      TIM2->SR = 0;
+      TIM2->CR1 |= TIM_CR1_CEN;
     break;
     default:
       assert( 0 );
@@ -34,4 +45,10 @@ uint16_t pcan_timestamp_ticks( void )
 {
   /* 1 pcan tick => 42.666 us */
   return TIM3->CNT;
+}
+
+uint32_t pcan_timestamp_us( void )
+{
+  /* TIM2 以 1 MHz 计数，1 count = 1 µs，直接读寄存器 */
+  return TIM2->CNT;
 }

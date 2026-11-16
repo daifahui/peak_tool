@@ -3,6 +3,7 @@
 #include "plin_lin.h"
 #include "plin_protocol.h"
 #include "pcan_usb.h"
+#include "pcan_timestamp.h"
 
 #define LIN_RX_RING_SIZE  128
 #define LIN_RX_RING_MASK  ( LIN_RX_RING_SIZE - 1 )
@@ -156,7 +157,7 @@ static void lin_report( struct lin_channel *chan, uint8_t pid, uint8_t length,
                         const uint8_t *data )
 {
   uint8_t msg[PLIN_RX_MSG_SIZE] = { 0 };
-  uint32_t ts = HAL_GetTick() * 1000u;
+  uint32_t ts = pcan_timestamp_us();
 
   (void)checksum;
 
