@@ -1,1 +1,28 @@
-/build*
+# 构建输出
+/build*/
+*.o
+*.d
+*.lst
+*.elf
+*.hex
+*.bin
+*.map
+*.su
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.uvguix.*
+*.uvoptx
+*.uvprojx
+*.uvmpw
+
+# 操作系统
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 日志与临时文件
+*.log
+*.tmp
+*.bak

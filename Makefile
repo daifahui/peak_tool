@@ -21,9 +21,9 @@ BUILD_DIR = build-$(BOARD)
 ######################################
 # mcu selection (can be overridden per board)
 ######################################
-MCU_SERIES ?= STM32F042x6
-STARTUP    ?= startup_stm32f042x6.s
-LDSCRIPT   ?= STM32F042C6Tx_FLASH.ld
+MCU_SERIES ?= STM32F072xB
+STARTUP    ?= startup_stm32f072xb.s
+LDSCRIPT   ?= STM32F072CBTx_FLASH.ld
 
 ######################################
 # source
@@ -143,21 +143,6 @@ LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BU
 
 # default action: build target board
 all: usbcan_f072
-
-cantact_16:
-	$(MAKE) BOARD=cantact_16 DEBUG=0 OPT=-Os BOARD_FLAGS='-DHSE_VALUE=16000000' elf hex bin
-
-cantact_8:
-	$(MAKE) BOARD=cantact_8 DEBUG=0 OPT=-Os BOARD_FLAGS='-DHSE_VALUE=8000000' elf hex bin
-
-entree:
-	$(MAKE) BOARD=entree DEBUG=0 OPT=-Os BOARD_FLAGS='-DHSE_VALUE=0' elf hex bin
-
-canable: 
-	$(MAKE) BOARD=canable DEBUG=0 OPT=-Os BOARD_FLAGS='-DHSE_VALUE=0' elf hex bin
-
-ollie:
-	$(MAKE) BOARD=ollie DEBUG=0 OPT=-Os BOARD_FLAGS='-DHSE_VALUE=16000000' elf hex bin
 
 usbcan_f072:
 	$(MAKE) BOARD=usbcan_f072 DEBUG=0 OPT=-Os TARGET_VARIANT=USBCAN_F072 \
