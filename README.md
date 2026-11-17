@@ -11,6 +11,7 @@ USB 行为来自对真实 PLIN-USB 盒子的 USBPcap 抓包与 PLinApi 调用逐
 - [x] M3 PLIN 命令通道：`0x04/0x84` 命令、`0x18` 状态轮询、`0x85/0x86` 异步 RX 队列
 - [x] M4 LIN 主/从驱动：USART1(PA9/PA10)=LIN1、USART2(PA2/PA3)=LIN2；break/报头/数据全部由 TXE/TC 中断发送，主循环不再阻塞
 - [ ] M5 与 PLIN-View Pro 联调：设备枚举、连接、初始化、帧表、调度、状态已通过；RX 报文投递待解决
+- [x] M6 Pro FD CAN 通道：实现 uCAN 协议，Windows 驱动状态正常，PCAN-View 可连接并下发发送；总线收发待对端验证
 
 ## 引脚分配
 
@@ -63,11 +64,15 @@ Restart-Service -Name 'PLIN Manager' -Force
 
 | 上位机 | 接口 | 状态 |
 |---|---|---|
-| PCAN-View | CAN (MI_00) | Pro FD 身份下不可用（驱动报错 10）；经典身份固件 `usbcan_f072_sja1000` 可被 PCAN-USB 驱动识别 |
+| PCAN-View | CAN (MI_00) | Pro FD 身份下驱动状态正常，可连接并下发发送；CAN 总线收发待对端 ACK 验证 |
 | PLIN-View Pro 3.1.x | LIN (MI_01) | 枚举/连接/初始化/帧表/调度/状态通过；RX 投递待解决 |
 
 ## 实现说明
 
+- CAN 通道按真机 uCAN 协议实现：命令走 EP1、数据 OUT 走 EP2/EP3、数据 IN 走 EP82。
+  主机命令以 128 字节 + ZLP 下发，固件按 8 字节命令记录解析到 EOC；上报以 64 字节记录包发送，
+  校准/状态/总线负载 1 Hz，CAN 帧按 36 字节记录。
+- uCAN 时间戳为 64 位 µs，由 TIM2 32 位计数器扩展；Bus Off 或 USB 重新配置时清理软件 TX FIFO 与 IN 队列。
 - LIN 发送采用 USART TXE/TC 中断状态机：主机调度、从机应答都只把字节序列交给发送引擎，
   主循环不再按字节忙等，USB 命令/数据通道始终有人服务。
 - LIN 接收由 RXNE 中断写入 128 字节环形缓冲，主循环解析；主机等待应答带超时窗口。
@@ -103,8 +108,8 @@ Restart-Service -Name 'PLIN Manager' -Force
 - **PLIN RX 投递**：0x85 的 36 字节报文线上内容已正确（PID/长度/方向/数据/序号/时间戳），但当前
   `PLinMng 3.0.0.219`（驱动 `1.7.0.1122`）不把报文投递给客户端；抓包文档环境是
   `3.0.1.227 / 1.7.1.1147`，怀疑版本差异。需要真实 PLIN 盒子在当前环境抓一次 0x85 对比，或升级 PEAK 驱动。
-- **CAN / PCAN-View**：Pro FD 身份下 MI_00 仍使用 SJA1000 命令协议，驱动无法启动；
-  需要适配 Pro FD 的 CAN 协议，或使用经典身份固件 `make usbcan_f072_sja1000`（`0C72:000C`）。
+- **CAN / PCAN-View**：Pro FD 身份已改用 uCAN 协议，Windows 驱动状态正常且 PCAN-View 可连接并下发发送；
+  尚未接对端节点验证 ACK 与接收路径。F072 只有经典 bxCAN，CAN FD 帧会被丢弃，第二路 CAN 无硬件。
 
 ### LIN / PLIN 功能
 

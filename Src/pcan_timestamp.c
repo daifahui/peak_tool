@@ -4,6 +4,9 @@
 #define TIM_BUS_FREQ (48000000)
 #define TIM_US_PRESCALER ( ( TIM_BUS_FREQ / 1000000u ) - 1u )
 
+static uint32_t us64_last;
+static uint64_t us64_total;
+
 void pcan_timestamp_init( void )
 {
 
@@ -29,6 +32,9 @@ void pcan_timestamp_init( void )
       TIM2->EGR = TIM_EGR_UG;      /* 立即装载预分频值 */
       TIM2->SR = 0;
       TIM2->CR1 |= TIM_CR1_CEN;
+
+      us64_last = TIM2->CNT;
+      us64_total = 0;
     break;
     default:
       assert( 0 );
@@ -51,4 +57,14 @@ uint32_t pcan_timestamp_us( void )
 {
   /* TIM2 以 1 MHz 计数，1 count = 1 µs，直接读寄存器 */
   return TIM2->CNT;
+}
+
+uint64_t pcan_timestamp_us64( void )
+{
+  uint32_t now = TIM2->CNT;
+
+  us64_total += (uint32_t)( now - us64_last );
+  us64_last = now;
+
+  return us64_total;
 }

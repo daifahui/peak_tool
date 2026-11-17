@@ -11,6 +11,9 @@
 #if PCAN_USE_PLIN
 #include "plin_protocol.h"
 #endif
+#if PCAN_CAN_USE_UCAN
+#include "pcan_ucan.h"
+#endif
 
 USBD_HandleTypeDef hUsbDeviceFS;
 extern USBD_DescriptorsTypeDef FS_Desc;
@@ -65,7 +68,7 @@ __ALIGN_BEGIN static struct t_peak_description peak_usb_dev __ALIGN_END =
     .bInterfaceClass      = 0,
     .bInterfaceSubClass   = 0,
     .bInterfaceProtocol   = 0,
-    .iInterface           = 0,
+    .iInterface           = 5,
   },
   .if0_ep =
   {
@@ -101,6 +104,7 @@ __ALIGN_BEGIN static struct t_peak_description peak_usb_dev __ALIGN_END =
       .wMaxPacketSize     = PCAN_USB_EP_SIZE,
       .bInterval          = 0,
     },
+#if PCAN_USE_PLIN
     {
       .bLength            = sizeof( USB_ENDPOINT_DESCRIPTOR ),
       .bDescriptorType    = USB_ENDPOINT_DESCRIPTOR_TYPE,
@@ -117,6 +121,7 @@ __ALIGN_BEGIN static struct t_peak_description peak_usb_dev __ALIGN_END =
       .wMaxPacketSize     = PCAN_USB_EP_SIZE,
       .bInterval          = 0,
     },
+#endif
   },
 #if PCAN_USE_PLIN
   .if1 =
@@ -129,7 +134,7 @@ __ALIGN_BEGIN static struct t_peak_description peak_usb_dev __ALIGN_END =
     .bInterfaceClass      = 0,
     .bInterfaceSubClass   = 0,
     .bInterfaceProtocol   = 0,
-    .iInterface           = 0,
+    .iInterface           = 6,
   },
   .if1_ep =
   {
@@ -203,11 +208,19 @@ static uint8_t *peak_ep_out_buffer( uint8_t epnum )
 
 static uint16_t peak_ep_out_size( uint8_t epnum )
 {
+#if PCAN_CAN_USE_UCAN
+  /* uCAN 命令/数据 OUT 由主机以 128 字节 + ZLP 下发 */
+  if( epnum == PCAN_USB_EP_CMDOUT ||
+      epnum == PCAN_USB_EP_MSGOUT ||
+      epnum == PCAN_USB_EP_MSG1OUT )
+    return PCAN_USB_OUT_SIZE;
+#endif
 #if PCAN_USE_PLIN
   /* LIN 数据 OUT 只承载 36 字节消息，PMA 缓冲按 40 字节分配 */
   if( epnum == PLIN_EP_DATA0OUT || epnum == PLIN_EP_DATA1OUT )
     return PLIN_RX_MSG_SIZE;
 #endif
+  (void)epnum;
   return PCAN_USB_EP_SIZE;
 }
 
@@ -249,6 +262,10 @@ static uint8_t device_init( USBD_HandleTypeDef *pdev, uint8_t cfgidx )
 
   pdev->pClassData = (void*)&pcan_data;
 
+#if PCAN_CAN_USE_UCAN
+  pcan_ucan_usb_reset();
+#endif
+
   /* 只接收实际使用的 OUT 端点：CAN 命令/数据、LIN 命令/数据。
    * EP3 OUT 不使用，避免共享 PMA 缓冲被意外写入。 */
   {
@@ -256,6 +273,9 @@ static uint8_t device_init( USBD_HandleTypeDef *pdev, uint8_t cfgidx )
     {
       PCAN_USB_EP_CMDOUT,
       PCAN_USB_EP_MSGOUT,
+#if PCAN_CAN_USE_UCAN
+      PCAN_USB_EP_MSG1OUT,
+#endif
 #if PCAN_USE_PLIN
       PLIN_EP_CMDOUT,
       PLIN_EP_DATA0OUT,
@@ -277,6 +297,10 @@ static uint8_t device_init( USBD_HandleTypeDef *pdev, uint8_t cfgidx )
 static uint8_t device_deinit( USBD_HandleTypeDef *pdev, uint8_t cfgidx )
 {
   UNUSED( cfgidx );
+
+#if PCAN_CAN_USE_UCAN
+  pcan_ucan_usb_reset();
+#endif
 
   device_ep_list_set( pdev, peak_usb_dev.if0_ep, PCAN_CAN_EP_COUNT, 0 );
 #if PCAN_USE_PLIN
@@ -326,6 +350,21 @@ static uint8_t  device_setup( USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *re
       /* PCAN 引导信息查询 */
       if( req->bRequest == 0 && req->wValue == 0 )
       {
+#if PCAN_CAN_USE_UCAN
+        /* PCAN-USB Pro FD 引导信息（pcan_usb_pro_blinfo，28 字节） */
+        static const uint8_t bootloader_info[] = {
+                                0x00, 0x00, 0x00, 0x00, /* ctrl_type */
+                                0x01, 0x04, 0x01, 0x00, /* version */
+                                0x01, 0x01, 0x1A, 0x00, /* day/month/year/dummy */
+                                0x00, 0x00, 0x00, 0x00, /* serial hi */
+                                0x01, 0x00, 0x00, 0x00, /* serial lo */
+                                0x00, 0x00, 0x00, 0x00, /* hw_type */
+                                0x00, 0x00, 0x00, 0x00  /* hw_rev */
+                              };
+        uint16_t len = ( req->wLength < sizeof( bootloader_info ) ) ?
+                       req->wLength : (uint16_t)sizeof( bootloader_info );
+        USBD_CtlSendData( pdev, (void*)bootloader_info, len );
+#else
         static const uint8_t bootloader_info[] = { 
                                 0x00, 0x00, 0x08, 0x04, 0x00, 0x08, 0x07, 0x00,
                                 0x04, 0x02, 0xe0, 0x07, 0x01, 0x00, 0x00, 0x00
@@ -338,7 +377,45 @@ static uint8_t  device_setup( USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *re
         /* reset endpoints */
         pcan_flush_ep( PCAN_USB_EP_MSGIN );
         pcan_flush_ep( PCAN_USB_EP_CMDIN );
+#endif
       }
+#if PCAN_CAN_USE_UCAN
+      else if( req->bRequest == 0 && req->wValue == 1 )
+      {
+        /* 固件信息（pcan_ufd_fw_info，type=2 时附带端点映射） */
+        static const uint8_t fw_info[] = {
+                                0x24, 0x00,             /* size_of */
+                                0x02, 0x00,             /* type = EXT */
+                                0x01,                   /* hw_type */
+                                0x01, 0x04, 0x01,       /* bl_version */
+                                0x01,                   /* hw_version */
+                                0x02, 0x00, 0x00,       /* fw_version */
+                                0x00, 0x00, 0x00, 0x00, /* dev_id[0] */
+                                0x00, 0x00, 0x00, 0x00, /* dev_id[1] */
+                                0x01, 0x00, 0x00, 0x00, /* ser_no */
+                                0x00, 0x00, 0x00, 0x00, /* flags */
+                                0x01,                   /* cmd_out_ep */
+                                0x81,                   /* cmd_in_ep */
+                                0x02, 0x03,             /* data_out_ep[2] */
+                                0x82,                   /* data_in_ep */
+                                0x00, 0x00, 0x00        /* dummy */
+                              };
+        uint16_t len = ( req->wLength < sizeof( fw_info ) ) ?
+                       req->wLength : (uint16_t)sizeof( fw_info );
+        USBD_CtlSendData( pdev, (void*)fw_info, len );
+      }
+      else if( req->bRequest == 2 && req->wValue == 5 )
+      {
+        /* FCT_DRVLD：主机告知驱动已加载，仅接收数据 */
+        static uint8_t drv_loaded[16];
+        uint16_t len = ( req->wLength < sizeof( drv_loaded ) ) ?
+                       req->wLength : (uint16_t)sizeof( drv_loaded );
+        if( len )
+          USBD_CtlPrepareRx( pdev, drv_loaded, len );
+        else
+          USBD_CtlSendStatus( pdev );
+      }
+#endif
       break;
 
     case USB_REQ_TYPE_STANDARD:
@@ -389,6 +466,11 @@ static uint8_t device_data_in( USBD_HandleTypeDef *pdev, uint8_t epnum )
   pdev->ep_in[epnum].total_length = 0U;
   p_data->ep_tx_in_use[epnum] = 0;
 
+#if PCAN_CAN_USE_UCAN
+  if( epnum == ( PCAN_USB_EP_MSGIN & 0x0F ) )
+    pcan_ucan_on_tx_done();
+#endif
+
 #if PCAN_USE_PLIN
   if( epnum == ( PLIN_EP_DATA0IN & 0x0F ) )
     plin_protocol_on_tx_done( 0 );
@@ -413,11 +495,25 @@ static uint8_t device_data_out( USBD_HandleTypeDef *pdev, uint8_t epnum )
   switch( epnum )
   {
     case PCAN_USB_EP_CMDOUT:
+#if PCAN_CAN_USE_UCAN
+      pcan_ucan_process_command( pcan_data.buffer_cmd, (uint16_t)size );
+#else
       pcan_protocol_process_command( pcan_data.buffer_cmd, (uint16_t)size );
+#endif
       break;
     case PCAN_USB_EP_MSGOUT:
+#if PCAN_CAN_USE_UCAN
+      pcan_ucan_process_data( pcan_data.buffer_data, (uint16_t)size, 0 );
+#else
       pcan_protocol_process_data( pcan_data.buffer_data, (uint16_t)size );
+#endif
       break;
+#if PCAN_CAN_USE_UCAN
+    case PCAN_USB_EP_MSG1OUT:
+      /* 单路 CAN 硬件：CAN2 数据仅接收不处理 */
+      pcan_ucan_process_data( pcan_data.buffer_data1, (uint16_t)size, 1 );
+      break;
+#endif
 #if PCAN_USE_PLIN
     case PLIN_EP_CMDOUT:
       plin_protocol_process_command( pcan_data.buffer_lin_cmd, (uint16_t)size );
@@ -430,7 +526,6 @@ static uint8_t device_data_out( USBD_HandleTypeDef *pdev, uint8_t epnum )
       break;
 #endif
     default:
-      /* 0x03 预留数据通道，丢弃 */
       break;
   }
 
@@ -471,6 +566,27 @@ static uint8_t *device_get_device_qualifier( uint16_t *length )
 static uint8_t *device_get_user_string( USBD_HandleTypeDef *pdev, uint8_t index, uint16_t *length )
 {
   UNUSED( pdev );
+#if PCAN_USE_PLIN
+  /* 与真机一致：MI_00/MI_01 的 iInterface 分别为 5/6 */
+  if( index == 5 )
+  {
+    __ALIGN_BEGIN static const uint8_t can_iface_desc[] __ALIGN_END =
+    {
+      0x08, USB_DESC_TYPE_STRING, 'C', 0, 'A', 0, 'N', 0
+    };
+    *length = sizeof( can_iface_desc );
+    return (uint8_t*)can_iface_desc;
+  }
+  if( index == 6 )
+  {
+    __ALIGN_BEGIN static const uint8_t lin_iface_desc[] __ALIGN_END =
+    {
+      0x08, USB_DESC_TYPE_STRING, 'L', 0, 'I', 0, 'N', 0
+    };
+    *length = sizeof( lin_iface_desc );
+    return (uint8_t*)lin_iface_desc;
+  }
+#endif
   if( index == 10 )
   {
     __ALIGN_BEGIN static const uint16_t vendor_descriptor[1+24] __ALIGN_END = 

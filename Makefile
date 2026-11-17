@@ -37,6 +37,7 @@ Src/pcan_usb.c \
 Src/pcan_can.c \
 Src/pcan_led.c \
 Src/pcan_protocol.c \
+Src/pcan_ucan.c \
 Src/pcan_timestamp.c \
 Src/plin_protocol.c \
 Src/plin_lin.c \

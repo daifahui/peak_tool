@@ -121,6 +121,117 @@ void pcan_can_set_bitrate( uint16_t brp, uint8_t tseg1, uint8_t tseg2, uint8_t s
   {
     assert( 0 );
   }
+
+  HAL_CAN_ActivateNotification( &g_hcan, INTERNAL_CAN_IT_FLAGS );
+}
+
+/* 按目标波特率在 48 MHz CAN 时钟上搜索位时序。
+ * tseg1/tseg2 为真机 uCAN 请求的实际段长度（含 1），用于尽量对齐采样点。 */
+void pcan_can_set_timing_bps( uint32_t bps, uint32_t tseg1, uint32_t tseg2, uint8_t sjw )
+{
+  static const uint32_t sjw_table[] =
+  {
+    CAN_SJW_1TQ, CAN_SJW_2TQ, CAN_SJW_3TQ, CAN_SJW_4TQ
+  };
+  static const uint32_t tseg1_table[] =
+  {
+    CAN_BS1_1TQ, CAN_BS1_2TQ, CAN_BS1_3TQ, CAN_BS1_4TQ,
+    CAN_BS1_5TQ, CAN_BS1_6TQ, CAN_BS1_7TQ, CAN_BS1_8TQ,
+    CAN_BS1_9TQ, CAN_BS1_10TQ, CAN_BS1_11TQ, CAN_BS1_12TQ,
+    CAN_BS1_13TQ, CAN_BS1_14TQ, CAN_BS1_15TQ, CAN_BS1_16TQ
+  };
+  static const uint32_t tseg2_table[] =
+  {
+    CAN_BS2_1TQ, CAN_BS2_2TQ, CAN_BS2_3TQ, CAN_BS2_4TQ,
+    CAN_BS2_5TQ, CAN_BS2_6TQ, CAN_BS2_7TQ, CAN_BS2_8TQ
+  };
+  uint32_t best_p = 0;
+  uint32_t best_bs1 = 0;
+  uint32_t best_bs2 = 0;
+  uint64_t best_score = 0xFFFFFFFFFFFFFFFFull;
+  uint32_t req_total;
+  uint32_t req_sp;
+
+  if( bps == 0 )
+    return;
+
+  req_total = 1u + tseg1 + tseg2;
+  req_sp = ( req_total != 0 ) ? ( ( 1u + tseg1 ) * 1000u / req_total ) : 750u;
+
+  for( uint32_t p = 1; p <= 1024u; p++ )
+  {
+    for( uint32_t total = 3; total <= 25u; total++ )
+    {
+      uint32_t actual = 48000000u / ( p * total );
+      uint32_t err;
+
+      if( actual == 0 )
+        continue;
+
+      err = ( actual > bps ) ? ( actual - bps ) : ( bps - actual );
+      /* 只在 5% 误差内寻找，避免选出离谱组合 */
+      if( err > ( bps / 20u ) )
+        continue;
+
+      for( uint32_t bs1 = 1; bs1 <= 16u; bs1++ )
+      {
+        uint32_t bs2;
+        uint32_t sp;
+        uint32_t sp_err;
+        uint64_t score;
+
+        if( total < ( bs1 + 2u ) )
+          continue;
+
+        bs2 = total - 1u - bs1;
+        if( bs2 < 1u || bs2 > 8u )
+          continue;
+
+        sp = ( 1u + bs1 ) * 1000u / total;
+        sp_err = ( sp > req_sp ) ? ( sp - req_sp ) : ( req_sp - sp );
+        score = (uint64_t)err * 1000000ull + (uint64_t)sp_err;
+
+        if( score < best_score )
+        {
+          best_score = score;
+          best_p = p;
+          best_bs1 = bs1;
+          best_bs2 = bs2;
+        }
+      }
+    }
+  }
+
+  if( best_p == 0 )
+    return;
+
+  if( sjw < 1 )
+    sjw = 1;
+  if( sjw > 4 )
+    sjw = 4;
+
+  g_hcan.Init.Prescaler = best_p;
+  g_hcan.Init.TimeSeg1 = tseg1_table[best_bs1 - 1];
+  g_hcan.Init.TimeSeg2 = tseg2_table[best_bs2 - 1];
+  g_hcan.Init.SyncJumpWidth = sjw_table[sjw - 1];
+
+  if( HAL_CAN_Init( &g_hcan ) != HAL_OK )
+  {
+    assert( 0 );
+  }
+
+  HAL_CAN_ActivateNotification( &g_hcan, INTERNAL_CAN_IT_FLAGS );
+}
+
+void pcan_can_abort_tx( void )
+{
+  HAL_CAN_AbortTxRequest( &g_hcan,
+                          CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2 );
+}
+
+uint32_t pcan_can_esr( void )
+{
+  return g_hcan.Instance->ESR;
 }
 
 void pcan_can_install_rx_callback( void (*cb)( can_message_t * ) )
@@ -204,6 +315,7 @@ void pcan_can_set_silent( uint8_t silent_mode )
   {
     assert( 0 );
   }
+  HAL_CAN_ActivateNotification( &g_hcan, INTERNAL_CAN_IT_FLAGS );
 }
 
 void pcan_can_set_loopback( uint8_t loopback )
@@ -226,6 +338,10 @@ void pcan_can_set_bus_active( uint16_t mode )
   {
     HAL_CAN_AbortTxRequest( &g_hcan, CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2 );
     HAL_CAN_Stop( &g_hcan );
+
+    /* 总线关闭时丢弃软件 FIFO 中尚未发送的报文 */
+    can_dev.tx_head = 0;
+    can_dev.tx_tail = 0;
   }
 }
 

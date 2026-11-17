@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "pcan_identity.h"
 
 /* PCAN-USB Pro FD 复合设备：MI_00 = CAN，MI_01 = LIN */
 #define PCAN_USB_EP_CMDOUT  0x01
@@ -11,13 +12,20 @@
 
 #define PCAN_USB_EP_SIZE    64
 
+/* Pro FD 主机侧命令/数据 OUT 常以 128 字节 + ZLP 下发 */
+#if PCAN_CAN_USE_UCAN
+  #define PCAN_USB_OUT_SIZE  128
+#else
+  #define PCAN_USB_OUT_SIZE  64
+#endif
+
 struct t_class_data
 {
   uint16_t  ep_tx_data_pending[15];
   uint8_t   ep_tx_in_use[15];
-  uint8_t   buffer_cmd[PCAN_USB_EP_SIZE];
-  uint8_t   buffer_data[PCAN_USB_EP_SIZE];
-  uint8_t   buffer_data1[PCAN_USB_EP_SIZE];
+  uint8_t   buffer_cmd[PCAN_USB_OUT_SIZE];
+  uint8_t   buffer_data[PCAN_USB_OUT_SIZE];
+  uint8_t   buffer_data1[PCAN_USB_OUT_SIZE];
   uint8_t   buffer_lin_cmd[PCAN_USB_EP_SIZE];
   uint8_t   buffer_lin_data0[PCAN_USB_EP_SIZE];
   uint8_t   buffer_lin_data1[PCAN_USB_EP_SIZE];

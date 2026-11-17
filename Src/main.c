@@ -5,6 +5,9 @@
 #include "pcan_usb.h"
 #include "pcan_varian.h"
 #include "pcan_identity.h"
+#if PCAN_CAN_USE_UCAN
+#include "pcan_ucan.h"
+#endif
 #if PCAN_USE_PLIN
 #include "plin_protocol.h"
 #include "plin_lin.h"
@@ -100,7 +103,11 @@ int main( void )
   pcan_usb_init();
   pcan_led_init();
   pcan_timestamp_init();
+#if PCAN_CAN_USE_UCAN
+  pcan_ucan_init();
+#else
   pcan_protocol_init();
+#endif
 #if PCAN_USE_PLIN
   plin_protocol_init();
   plin_lin_init();
@@ -114,7 +121,11 @@ int main( void )
   {
     pcan_usb_poll();
     pcan_led_poll();
+#if PCAN_CAN_USE_UCAN
+    pcan_ucan_poll();
+#else
     pcan_protocol_poll();
+#endif
 #if PCAN_USE_PLIN
     plin_protocol_poll();
     plin_lin_poll();

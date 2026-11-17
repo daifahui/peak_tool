@@ -14,12 +14,14 @@
   #define PCAN_USB_VID          0x0C72
   #define PCAN_USB_PID          0x000C
   #define PCAN_USE_PLIN         0
+  #define PCAN_CAN_USE_UCAN     0
   #define PCAN_USB_IFACE_COUNT  1
   #define PCAN_USB_PRODUCT_NAME "PCAN-USB"
 #elif defined( PCAN_IDENTITY_PRO_FD )
   #define PCAN_USB_VID          0x0C72
   #define PCAN_USB_PID          0x0011
   #define PCAN_USE_PLIN         1
+  #define PCAN_CAN_USE_UCAN     1
   #define PCAN_USB_IFACE_COUNT  2
   #define PCAN_USB_PRODUCT_NAME "PCAN-USB Pro FD"
 #else
