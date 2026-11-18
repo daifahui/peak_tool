@@ -19,20 +19,23 @@ enum
   PLIN_CMD_RST_HW_CONFIG     = 0x01,
   PLIN_CMD_SET_FRAME_ENTRY   = 0x02,
   PLIN_CMD_GET_FRAME_ENTRY   = 0x03,
+  PLIN_CMD_START_AUTO_BAUD   = 0x04,
   PLIN_CMD_GET_BAUDRATE      = 0x05,
   PLIN_CMD_SET_ID_FILTER     = 0x06,
   PLIN_CMD_GET_ID_FILTER     = 0x07,
   PLIN_CMD_GET_MASTER_MODE   = 0x08,
+  PLIN_CMD_HW_INFO           = 0x09,
   PLIN_CMD_GET_HW_NAME       = 0x0A,
   PLIN_CMD_IDENTIFY_HW       = 0x0B,
   PLIN_CMD_GET_FW_VERSION    = 0x0C,
-  PLIN_CMD_SET_KEEPALIVE     = 0x0D,
-  PLIN_CMD_GET_KEEPALIVE     = 0x0E,
-  PLIN_CMD_TRIGGER_KEEPALIVE = 0x0F,
+  PLIN_CMD_START_KEEPALIVE   = 0x0D,
+  PLIN_CMD_RESUME_KEEPALIVE  = 0x0E,
+  PLIN_CMD_SUSPEND_KEEPALIVE = 0x0F,
   PLIN_CMD_ADD_SLOT          = 0x10,
   PLIN_CMD_DELETE_SCHEDULE   = 0x11,
   PLIN_CMD_GET_SLOT_COUNT    = 0x12,
   PLIN_CMD_GET_SLOT          = 0x13,
+  PLIN_CMD_SET_BREAKPOINT    = 0x14,
   PLIN_CMD_START_SCHEDULE    = 0x15,
   PLIN_CMD_RESUME_SCHEDULE   = 0x16,
   PLIN_CMD_SUSPEND_SCHEDULE  = 0x17,
@@ -42,8 +45,10 @@ enum
   PLIN_CMD_XMT_WAKE_UP       = 0x21,
   PLIN_CMD_GET_SERIAL_NUMBER = 0x23,
   PLIN_CMD_GET_HARDWARE_TYPE = 0x24,
+  PLIN_CMD_GET_VERSION       = 0x25,
   PLIN_CMD_GET_TARGET_TIME   = 0x26,
   PLIN_CMD_RESPONSE_REMAP    = 0x27,
+  PLIN_CMD_HW_CONFIG         = 0x28,
   PLIN_CMD_BREAK_LEN         = 0x29,
   PLIN_CMD_TERMINATION       = 0x2A,
 
@@ -82,8 +87,15 @@ struct plin_channel
   uint8_t  slots[PLIN_MAX_SCHEDULES][PLIN_MAX_SLOTS][PLIN_SLOT_SIZE];
 
   uint8_t  keepalive_enable;
+  uint8_t  keepalive_id;
   uint16_t keepalive_interval;
   uint32_t keepalive_next_ms;
+
+  uint8_t  break_length;
+  uint8_t  termination;
+  uint8_t  user_data[8];
+  uint8_t  remap[64];
+  uint32_t bp_handle[2];
 
   uint16_t rx_overrun;
   uint8_t  rx_head;
@@ -144,7 +156,14 @@ static void plin_reset_config( struct plin_channel *chan )
   chan->build_schedule = 0;
   chan->schedule_active = 0;
   chan->keepalive_enable = 0;
+  chan->keepalive_id = 0;
   chan->keepalive_interval = 0;
+  chan->break_length = 13;                 /* LIN 标准 break 13 位 */
+  chan->termination = 0;
+  memset( chan->user_data, 0, sizeof( chan->user_data ) );
+  memset( chan->bp_handle, 0, sizeof( chan->bp_handle ) );
+  for( uint8_t i = 0; i < 64; i++ )
+    chan->remap[i] = i;                    /* 默认 ID 映射到自身 */
   memset( chan->filter, 0, sizeof( chan->filter ) );
   memset( chan->frame_valid, 0, sizeof( chan->frame_valid ) );
   memset( chan->frames, 0, sizeof( chan->frames ) );
@@ -187,6 +206,12 @@ static void plin_kick_rx( uint8_t channel )
 void plin_protocol_init( void )
 {
   memset( plin_channels, 0, sizeof( plin_channels ) );
+  for( uint8_t ch = 0; ch < PLIN_CHANNELS; ch++ )
+  {
+    plin_channels[ch].break_length = 13;
+    for( uint8_t i = 0; i < 64; i++ )
+      plin_channels[ch].remap[i] = i;
+  }
 }
 
 void plin_protocol_poll( void )
@@ -335,36 +360,74 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       break;
     }
 
-    case PLIN_CMD_SET_KEEPALIVE:
+    case PLIN_CMD_START_KEEPALIVE:
       if( size >= 8 )
       {
-        chan->keepalive_interval = (uint16_t)( buf[5] | ( buf[6] << 8 ) );
+        /* 真机格式：[0][frame id][period u16]；无响应 */
+        chan->keepalive_id = buf[5];
+        chan->keepalive_interval = (uint16_t)( buf[6] | ( buf[7] << 8 ) );
         if( chan->keepalive_interval < 10 )
           chan->keepalive_interval = 10;
-        chan->keepalive_enable = buf[4] ? 1 : 0;
+        chan->keepalive_enable = 1;
         chan->keepalive_next_ms = HAL_GetTick() + chan->keepalive_interval;
-        plin_send_raw( buf, 8 );
       }
       break;
 
-    case PLIN_CMD_GET_KEEPALIVE:
-    {
-      uint8_t rsp[4];
+    case PLIN_CMD_RESUME_KEEPALIVE:
+      if( chan->keepalive_interval )
+      {
+        chan->keepalive_enable = 1;
+        chan->keepalive_next_ms = HAL_GetTick() + chan->keepalive_interval;
+      }
+      break;
 
-      rsp[0] = chan->keepalive_enable;
-      rsp[1] = (uint8_t)( chan->keepalive_interval & 0xFF );
-      rsp[2] = (uint8_t)( chan->keepalive_interval >> 8 );
-      rsp[3] = 0;
-      plin_reply( buf, rsp, sizeof( rsp ) );
+    case PLIN_CMD_SUSPEND_KEEPALIVE:
+      chan->keepalive_enable = 0;
+      break;
+
+    case PLIN_CMD_START_AUTO_BAUD:
+    {
+      /* 真机响应：回显头 4 字节 + 4 字节状态 0 */
+      uint8_t rsp[8] = { 0 };
+
+      memcpy( rsp, buf, 4 );
+      plin_send_raw( rsp, sizeof( rsp ) );
       break;
     }
 
-    case PLIN_CMD_TRIGGER_KEEPALIVE:
-      if( size >= 8 )
+    case PLIN_CMD_HW_INFO:
+      /* 52 字节硬件信息：UserData 在 +24、IdNumber 在 +48；无响应 */
+      if( size >= 32 )
+        memcpy( chan->user_data, &buf[24], sizeof( chan->user_data ) );
+      break;
+
+    case PLIN_CMD_SET_BREAKPOINT:
+      /* [breakpoint number][handle u32]；无响应 */
+      if( size >= 12 )
       {
-        plin_lin_send_wakeup( channel );
-        plin_send_raw( buf, 8 );
+        uint8_t bp = (uint8_t)( buf[4] & 0x01 );
+
+        chan->bp_handle[bp] = (uint32_t)buf[8] | ( (uint32_t)buf[9] << 8 ) |
+                              ( (uint32_t)buf[10] << 16 ) | ( (uint32_t)buf[11] << 24 );
       }
+      break;
+
+    case PLIN_CMD_RESPONSE_REMAP:
+      /* [0]=get / [1]=set，后跟 64 字节重映射表；真机两种都无响应 */
+      if( size >= 72 && buf[4] == 1 )
+        memcpy( chan->remap, &buf[8], sizeof( chan->remap ) );
+      break;
+
+    case PLIN_CMD_BREAK_LEN:
+      /* 枚举期配置：payload[1] = break 长度（通常 13 位），无响应 */
+      if( size >= 6 )
+        chan->break_length = buf[5];
+      break;
+
+    case PLIN_CMD_TERMINATION:
+      /* 枚举期配置：payload[0] = 终端电阻开关，无响应 */
+      if( size >= 5 )
+        chan->termination = buf[4];
       break;
 
     case PLIN_CMD_ADD_SLOT:
@@ -567,12 +630,11 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
 
     case PLIN_CMD_GET_BAUDRATE:
     case PLIN_CMD_GET_SERIAL_NUMBER:
+    case PLIN_CMD_GET_VERSION:
     case PLIN_CMD_GET_TARGET_TIME:
-    case PLIN_CMD_RESPONSE_REMAP:
-    case PLIN_CMD_BREAK_LEN:
-    case PLIN_CMD_TERMINATION:
+    case PLIN_CMD_HW_CONFIG:
     default:
-      /* 无数据响应：只等待 OUT URB 完成 */
+      /* 无数据响应：只等待 OUT URB 完成（与真机一致） */
       break;
   }
 }
