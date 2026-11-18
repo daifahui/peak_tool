@@ -4,6 +4,7 @@
 #include "usbd_def.h"
 #include "usbd_core.h"
 #include "usbd_conf.h"
+#include "pcan_identity.h"
 
 PCD_HandleTypeDef hpcd_USB_FS;
 
@@ -131,7 +132,13 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x81 , PCD_SNG_BUF, 0x100);
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x02 , PCD_SNG_BUF, 0x140);
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x82 , PCD_SNG_BUF, 0x180);
+#if PCAN_CAN_USE_UCAN
+  /* uCAN 身份下 EP1 IN 不用于命令回复，EP3 OUT 复用该空闲 PMA 区，
+   * 避免与 EP2 OUT 共用 0x140 造成并发接收互相覆盖。 */
+  HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x03 , PCD_SNG_BUF, 0x100);
+#else
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x03 , PCD_SNG_BUF, 0x140);
+#endif
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x83 , PCD_SNG_BUF, 0x180);
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x04 , PCD_SNG_BUF, 0x1C0);
   HAL_PCDEx_PMAConfig((PCD_HandleTypeDef*)pdev->pData , 0x84 , PCD_SNG_BUF, 0x200);

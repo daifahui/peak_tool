@@ -7,6 +7,9 @@
 #include "pcan_protocol.h"
 #include "pcan_led.h"
 #include "pcan_usb.h"
+#if PCAN_USB_STRESS
+#include "pcan_usb_dbg.h"
+#endif
 #include "pcan_identity.h"
 #if PCAN_USE_PLIN
 #include "plin_protocol.h"
@@ -466,6 +469,10 @@ static uint8_t device_data_in( USBD_HandleTypeDef *pdev, uint8_t epnum )
   pdev->ep_in[epnum].total_length = 0U;
   p_data->ep_tx_in_use[epnum] = 0;
 
+#if PCAN_USB_STRESS
+  pcan_usb_dbg_in( epnum );
+#endif
+
 #if PCAN_CAN_USE_UCAN
   if( epnum == ( PCAN_USB_EP_MSGIN & 0x0F ) )
     pcan_ucan_on_tx_done();
@@ -491,6 +498,10 @@ static uint8_t device_data_out( USBD_HandleTypeDef *pdev, uint8_t epnum )
     return USBD_FAIL;
   
   size = USBD_LL_GetRxDataSize( pdev, epnum );
+
+#if PCAN_USB_STRESS
+  pcan_usb_dbg_out( epnum, peak_ep_out_buffer( epnum ), (uint16_t)size );
+#endif
 
   switch( epnum )
   {

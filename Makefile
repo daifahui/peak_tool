@@ -34,6 +34,7 @@ Src/main.c \
 Src/usbd_conf.c \
 Src/usbd_desc.c \
 Src/pcan_usb.c \
+Src/pcan_usb_dbg.c \
 Src/pcan_can.c \
 Src/pcan_led.c \
 Src/pcan_protocol.c \

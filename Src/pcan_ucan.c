@@ -13,6 +13,13 @@
 
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
+#if PCAN_USB_STRESS
+#include "pcan_usb_dbg.h"
+#define UCAN_DBG_INC( f ) ( g_usb_dbg.f++ )
+#else
+#define UCAN_DBG_INC( f ) do { } while( 0 )
+#endif
+
 /* uCAN 命令 opcode（opcode_channel 低 10 位） */
 #define UCAN_CMD_RESET_MODE       0x001
 #define UCAN_CMD_NORMAL_MODE      0x002
@@ -104,7 +111,10 @@ static void ucan_put_ts( uint8_t *p, uint64_t ts )
 static void ucan_queue_packet( const uint8_t *pkt )
 {
   if( ucan.q_count >= UCAN_TXQ_LEN )
+  {
+    UCAN_DBG_INC( ucan_txq_drop );
     return;
+  }
 
   memcpy( ucan.q[ucan.q_head], pkt, UCAN_PKT_SIZE );
   ucan.q_head = (uint8_t)( ( ucan.q_head + 1u ) % UCAN_TXQ_LEN );
@@ -442,7 +452,10 @@ static void ucan_process_tx_record( const uint8_t *rec, uint16_t size )
 
   /* 单路 CAN 硬件：CAN2 暂不发送 */
   if( channel != 0 )
+  {
+    UCAN_DBG_INC( can_tx_ch1 );
     return;
+  }
 
   /* 经典 bxCAN 不支持 CAN FD */
   if( flags & UCAN_FLAG_EXT_DATA_LEN )
@@ -464,6 +477,7 @@ static void ucan_process_tx_record( const uint8_t *rec, uint16_t size )
 
   if( pcan_can_send_message( &msg ) == 0 )
   {
+    UCAN_DBG_INC( can_tx_records );
     ucan.tx_frames++;
 
     if( flags & UCAN_FLAG_SELF_RECEIVE )
@@ -471,6 +485,10 @@ static void ucan_process_tx_record( const uint8_t *rec, uint16_t size )
       msg.flags |= CAN_FLAG_ECHO;
       ucan_report_can( &msg );
     }
+  }
+  else
+  {
+    UCAN_DBG_INC( can_tx_fail );
   }
 }
 
@@ -507,6 +525,7 @@ static void pcan_ucan_can_rx( can_message_t *msg )
   if( !ucan.bus_active )
     return;
 
+  UCAN_DBG_INC( can_rx_records );
   ucan.rx_frames++;
   pcan_led_set_mode( LED_CH0_RX, LED_MODE_BLINK_FAST, 237 );
   ucan_report_can( msg );
@@ -580,6 +599,10 @@ void pcan_ucan_poll( void )
 
   ucan_flush_pkt();
   ucan_kick();
+
+#if PCAN_USB_STRESS
+  g_usb_dbg.ucan_txq_count = ucan.q_count;
+#endif
 }
 
 #endif /* PCAN_CAN_USE_UCAN */

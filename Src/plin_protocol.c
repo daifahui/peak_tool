@@ -6,6 +6,9 @@
 #include "pcan_usb.h"
 #include "pcan_led.h"
 #include "usbd_core.h"
+#if PCAN_USB_STRESS
+#include "pcan_usb_dbg.h"
+#endif
 
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
@@ -104,10 +107,15 @@ static void plin_send_raw( const uint8_t *data, uint16_t size )
 
   memcpy( plin_cmd_tx, data, size );
   pdev->ep_in[PLIN_EP_CMDIN & 0x0F].total_length = size;
+#if PCAN_USB_STRESS
+  pcan_usb_dbg_rsp( data, size );
+#endif
   USBD_LL_Transmit( pdev, PLIN_EP_CMDIN, plin_cmd_tx, size );
 }
 
-/* 响应头：[cmd][0x01][channel][client]，后跟 payload */
+/* 响应头：[cmd][0x01][channel][client]，后跟 payload。
+ * 实测真机响应 byte1 恒为 0x01（设备号字段），byte2/3 回显通道/客户端；
+ * PLIN Manager 接受该固定值。 */
 static void plin_reply( const uint8_t *req, const uint8_t *payload, uint16_t size )
 {
   uint8_t rsp[PLIN_EP_SIZE];
@@ -240,6 +248,10 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
   command = buf[0];
   channel = buf[2] & 0x01;
   chan = &plin_channels[channel];
+
+#if PCAN_USB_STRESS
+  pcan_usb_dbg_cmd( buf, size );
+#endif
 
   switch( command )
   {
@@ -468,7 +480,7 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
     {
       uint8_t info[60] = { 0 };
 
-      info[0] = 2;                            /* type = 2 */
+      info[0] = 2;                            /* type = 2，与真机一致 */
       info[4] = 0x9F;                         /* 0x0000DF9F */
       info[5] = 0xDF;
       memcpy( &info[20], "STM32F072-LIN", 13 );
@@ -664,27 +676,40 @@ void plin_protocol_set_frame_data( uint8_t channel, uint8_t id,
   chan->frame_valid[id] = 1;
 }
 
-/* LIN_Write：主机经 Data OUT 0x05/0x06 下发的 36 字节消息，直接转为 LIN 发送请求 */
+/* LIN_Write：主机经 Data OUT 0x05/0x06 下发的写入消息。
+ * Pro FD Windows 驱动使用 24 字节紧凑格式（数据在 +16）；
+ * PLIN-USB 抓包格式为 36 字节（数据在 +28），两种都兼容。 */
 void plin_protocol_process_data( uint8_t channel, const uint8_t *buf, uint16_t size )
 {
-  uint8_t pid;
-  uint8_t length;
-  uint8_t direction;
-  uint8_t checksum_type;
+  uint16_t off = 0;
+  uint16_t rec_size;
+  uint8_t data_off;
 
-  if( channel >= PLIN_CHANNELS || buf == 0 || size < PLIN_RX_MSG_SIZE )
+  if( channel >= PLIN_CHANNELS || buf == 0 || size < 24u )
     return;
 
-  pid = buf[8];
-  length = buf[9];
-  direction = buf[10];
-  checksum_type = buf[11];
-  if( length > 8 )
-    length = 8;
+  rec_size = ( ( size % 24u ) == 0u && size != 36u ) ? 24u : 36u;
+  data_off = ( rec_size == 24u ) ? 16u : 28u;
 
-  /* 帧表同步更新，从机收到报头时即可用新数据应答 */
-  if( direction == 1 )
-    plin_protocol_set_frame_data( channel, (uint8_t)( pid & 0x3F ), &buf[28], length );
+  while( (uint16_t)( off + rec_size ) <= size )
+  {
+    const uint8_t *msg = &buf[off];
+    uint8_t pid = msg[8];
+    uint8_t length = msg[9];
+    uint8_t direction = msg[10];
+    uint8_t checksum_type = msg[11];
 
-  plin_lin_write( channel, pid, length, direction, checksum_type, &buf[28] );
+    if( length > 8u )
+      length = 8u;
+
+    /* 帧表同步更新，从机收到报头时即可用新数据应答 */
+    if( direction == 1 )
+      plin_protocol_set_frame_data( channel, (uint8_t)( pid & 0x3Fu ),
+                                    &msg[data_off], length );
+
+    plin_lin_write( channel, pid, length, direction, checksum_type,
+                    &msg[data_off] );
+
+    off = (uint16_t)( off + rec_size );
+  }
 }

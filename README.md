@@ -113,6 +113,10 @@ Restart-Service -Name 'PLIN Manager' -Force
 
 ### LIN / PLIN 功能
 
+- PLIN-View Pro 连接对话框 Hardware Type 显示 `Unknown`（真机显示具体型号）；待抓取真机
+  `GET_HARDWARE_TYPE (0x24)` / `GET_HW_NAME (0x0A)` 响应后修正。
+- 测试用 LDF：`D:\work_space\mcu\stm32\tool\03_plin_ldf\peak_tool_lin.ldf`，包含 `0x10/0x20/0x30/0x3B`
+  四个帧和 `Main_Schedule` 调度表，可直接在 PLIN-View Pro 中打开。
 - 未接 LIN 收发器，主/从实际总线收发未验证；主机端 1 kΩ 终端电阻和 12 V VBAT 未接。
 - 每通道 2 张调度表（`SELECT_SCHEDULE 0x33` 切换）；`GET_SLOT (0x13)` 已实现，`SET_SCHEDULE_BREAK (0x14)` 未实现。
 - 未实现：`START_AUTOBAUD (0x04)`、`SET_HW_NAME (0x09)`、`GET_HARDWARE_VERSION (0x25)`、
