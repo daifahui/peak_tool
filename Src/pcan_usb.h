@@ -12,7 +12,8 @@
 
 #define PCAN_USB_EP_SIZE    64
 
-/* Pro FD 主机侧命令/数据 OUT 常以 128 字节 + ZLP 下发 */
+/* Pro FD 主机侧命令/数据 OUT 以 128 字节 + ZLP 下发；
+ * 真机为 USB 高速设备（256 字节块），F072 为全速设备，驱动按 64/128 字节下发 */
 #if PCAN_CAN_USE_UCAN
   #define PCAN_USB_OUT_SIZE  128
 #else
