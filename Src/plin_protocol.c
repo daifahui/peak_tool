@@ -79,7 +79,7 @@ struct plin_channel
   uint8_t  active_schedule;
   uint8_t  build_schedule;
   uint8_t  schedule_active;
-  uint8_t  slots[PLIN_MAX_SCHEDULES][PLIN_MAX_SLOTS][PLIN_FRAME_ENTRY_SIZE];
+  uint8_t  slots[PLIN_MAX_SCHEDULES][PLIN_MAX_SLOTS][PLIN_SLOT_SIZE];
 
   uint8_t  keepalive_enable;
   uint16_t keepalive_interval;
@@ -95,6 +95,8 @@ struct plin_channel
 static struct plin_channel plin_channels[PLIN_CHANNELS];
 static uint8_t plin_cmd_tx[PLIN_EP_SIZE];
 static uint8_t plin_rx_tx[PLIN_CHANNELS][PLIN_RX_MSG_SIZE];
+static uint8_t plin_device_no = 1;
+static uint8_t plin_client_no;
 
 static void plin_send_raw( const uint8_t *data, uint16_t size )
 {
@@ -248,6 +250,8 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
   command = buf[0];
   channel = buf[2] & 0x01;
   chan = &plin_channels[channel];
+  plin_device_no = buf[1];
+  plin_client_no = buf[3];
 
 #if PCAN_USB_STRESS
   pcan_usb_dbg_cmd( buf, size );
@@ -367,16 +371,18 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       if( size >= 24 )
       {
         uint8_t rsp[32];
-        uint8_t sched = (uint8_t)( chan->build_schedule % PLIN_MAX_SCHEDULES );
+        uint8_t sched = (uint8_t)( buf[4] % PLIN_MAX_SCHEDULES );
 
         if( chan->slot_count[sched] < PLIN_MAX_SLOTS )
         {
-          memcpy( chan->slots[sched][chan->slot_count[sched]], &buf[8], PLIN_FRAME_ENTRY_SIZE );
+          /* Pro FD 槽体：schedule(u32) + type + count + delay(u16) +
+           * id[8] + handle(u32)，共 20 字节 */
+          memcpy( chan->slots[sched][chan->slot_count[sched]], &buf[4], PLIN_SLOT_SIZE );
           chan->slot_count[sched]++;
         }
 
+        memset( rsp, 0, sizeof( rsp ) );
         memcpy( rsp, buf, 24 );
-        memset( &rsp[24], 0, 8 );
         plin_send_raw( rsp, sizeof( rsp ) );
       }
       break;
@@ -385,16 +391,22 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       if( size >= 8 )
       {
         uint8_t rsp[20];
+        uint8_t sched = (uint8_t)( buf[4] % PLIN_MAX_SCHEDULES );
 
-        memset( chan->slot_count, 0, sizeof( chan->slot_count ) );
-        chan->schedule_active = 0;
-        chan->active_schedule = 0;
-        chan->build_schedule = 0;
-        memset( chan->slots, 0, sizeof( chan->slots ) );
-        plin_protocol_set_schedule_active( channel, 0 );
+        memset( chan->slots[sched], 0, sizeof( chan->slots[sched] ) );
+        chan->slot_count[sched] = 0;
+        if( chan->active_schedule == sched )
+        {
+          chan->schedule_active = 0;
+          plin_protocol_set_schedule_active( channel, 0 );
+        }
 
         memset( rsp, 0, sizeof( rsp ) );
         memcpy( rsp, buf, 8 );
+        /* 真机在 payload[4..5] 返回非零调度句柄；返回 0 会让 Manager
+         * 认为删除失败，从而跳过后续 GET_STATUS/ADD_SLOT。 */
+        rsp[8] = (uint8_t)( 0x52 + sched );
+        rsp[9] = 0x34;
         plin_send_raw( rsp, sizeof( rsp ) );
       }
       break;
@@ -408,7 +420,7 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
 
     case PLIN_CMD_GET_SLOT:
     {
-      uint8_t slot[PLIN_FRAME_ENTRY_SIZE] = { 0 };
+      uint8_t slot[PLIN_SLOT_SIZE] = { 0 };
       uint8_t index = ( size >= 5 ) ? buf[4] : 0;
 
       if( !plin_protocol_get_slot( channel, index, slot ) )
@@ -422,6 +434,7 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
     case PLIN_CMD_RESUME_SCHEDULE:
       if( size >= 8 )
       {
+        chan->active_schedule = (uint8_t)( buf[4] % PLIN_MAX_SCHEDULES );
         chan->schedule_active = 1;
         plin_protocol_set_schedule_active( channel, 1 );
         plin_send_raw( buf, 8 );
@@ -429,10 +442,13 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
       break;
 
     case PLIN_CMD_SUSPEND_SCHEDULE:
-      if( size >= 12 )
+      if( size >= 8 )
       {
-        chan->schedule_active = 0;
-        plin_protocol_set_schedule_active( channel, 0 );
+        if( chan->active_schedule == ( buf[4] % PLIN_MAX_SCHEDULES ) )
+        {
+          chan->schedule_active = 0;
+          plin_protocol_set_schedule_active( channel, 0 );
+        }
         plin_send_raw( buf, 12 );
       }
       break;
@@ -471,7 +487,7 @@ void plin_protocol_process_command( const uint8_t *buf, uint16_t size )
 
           if( ( offset + count ) > 8 )
             count = (uint8_t)( 8 - offset );
-          memcpy( &chan->frames[id].raw[8 + offset], &buf[8], count );
+          memcpy( &chan->frames[id].raw[6 + offset], &buf[8], count );
         }
       }
       break;
@@ -585,7 +601,7 @@ int plin_protocol_get_slot( uint8_t channel, uint8_t index, uint8_t *slot )
   if( index >= chan->slot_count[sched] )
     return 0;
 
-  memcpy( slot, chan->slots[sched][index], PLIN_FRAME_ENTRY_SIZE );
+  memcpy( slot, chan->slots[sched][index], PLIN_SLOT_SIZE );
   return 1;
 }
 
@@ -661,8 +677,7 @@ void plin_protocol_set_schedule_active( uint8_t channel, uint8_t active )
 
 void plin_protocol_set_frame_data( uint8_t channel, uint8_t id,
                                    const uint8_t *data, uint8_t length )
-{
-  struct plin_channel *chan;
+{  struct plin_channel *chan;
 
   if( channel >= PLIN_CHANNELS || id >= PLIN_MAX_FRAMES || data == 0 )
     return;
@@ -672,7 +687,7 @@ void plin_protocol_set_frame_data( uint8_t channel, uint8_t id,
     length = 8;
 
   chan->frames[id].raw[1] = length;
-  memcpy( &chan->frames[id].raw[8], data, length );
+  memcpy( &chan->frames[id].raw[6], data, length );
   chan->frame_valid[id] = 1;
 }
 
@@ -699,6 +714,9 @@ void plin_protocol_process_data( uint8_t channel, const uint8_t *buf, uint16_t s
     uint8_t direction = msg[10];
     uint8_t checksum_type = msg[11];
 
+    plin_device_no = msg[5];
+    plin_client_no = msg[7];
+
     if( length > 8u )
       length = 8u;
 
@@ -712,4 +730,14 @@ void plin_protocol_process_data( uint8_t channel, const uint8_t *buf, uint16_t s
 
     off = (uint16_t)( off + rec_size );
   }
+}
+
+uint8_t plin_protocol_get_device_no( void )
+{
+  return plin_device_no;
+}
+
+uint8_t plin_protocol_get_client_no( void )
+{
+  return plin_client_no;
 }

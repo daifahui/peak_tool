@@ -27,6 +27,18 @@ struct pcan_usb_dbg_s
   volatile uint8_t  cmd_log_idx;
   volatile uint8_t  rsp_log[32][8];
   volatile uint8_t  rsp_log_idx;
+
+  /* LIN USART 中断/发送计数 */
+  volatile uint32_t lin_irq[2];
+  volatile uint32_t lin_txe[2];
+  volatile uint32_t lin_tc[2];
+  volatile uint32_t lin_txd[2];
+  volatile uint32_t lin_cr1[2];
+  volatile uint32_t lin_isr[2];
+  volatile uint32_t lin_brr[2];
+  volatile uint32_t lin_cr2[2];
+  volatile uint32_t lin_cr3[2];
+  volatile uint32_t lin_nvic;
 };
 
 extern struct pcan_usb_dbg_s g_usb_dbg;

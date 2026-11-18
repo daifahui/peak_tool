@@ -6,16 +6,16 @@
 /* 调度表存储布局（2 个 2 KB 页，一页一张表）：
  *   0x0801F000 + n*0x800 : 表头（32 B）
  *   +32                  : 64 帧 × 16 B = 1024 B
- *   +1056                : 2 调度 × 8 槽 × 16 B = 256 B
- * 合计 1312 B < 2048 B，剩余空间留作后续扩展。 */
+ *   +1056                : 2 调度 × 8 槽 × 20 B = 320 B
+ * 合计 1376 B < 2048 B，剩余空间留作后续扩展。 */
 
 #define PLIN_STORE_BASE       0x0801F000u
 #define PLIN_STORE_PAGE_SIZE  0x800u
 #define PLIN_STORE_MAGIC      0x534E494Cu  /* "LINS" */
-#define PLIN_STORE_VERSION    2u
+#define PLIN_STORE_VERSION    3u
 
 #define STORE_FRAMES_SIZE ( PLIN_MAX_FRAMES * PLIN_FRAME_ENTRY_SIZE )
-#define STORE_SLOTS_SIZE  ( PLIN_MAX_SCHEDULES * PLIN_MAX_SLOTS * PLIN_FRAME_ENTRY_SIZE )
+#define STORE_SLOTS_SIZE  ( PLIN_MAX_SCHEDULES * PLIN_MAX_SLOTS * PLIN_SLOT_SIZE )
 
 struct plin_store_header
 {

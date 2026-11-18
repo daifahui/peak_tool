@@ -219,9 +219,9 @@ static uint16_t peak_ep_out_size( uint8_t epnum )
     return PCAN_USB_OUT_SIZE;
 #endif
 #if PCAN_USE_PLIN
-  /* LIN 数据 OUT 只承载 36 字节消息，PMA 缓冲按 40 字节分配 */
+  /* LIN 数据 OUT 兼容 24 字节 Pro FD 与 36 字节 PLIN-USB 两种报文 */
   if( epnum == PLIN_EP_DATA0OUT || epnum == PLIN_EP_DATA1OUT )
-    return PLIN_RX_MSG_SIZE;
+    return PLIN_WRITE_MSG_SIZE;
 #endif
   (void)epnum;
   return PCAN_USB_EP_SIZE;

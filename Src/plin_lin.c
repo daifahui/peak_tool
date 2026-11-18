@@ -2,6 +2,9 @@
 #include "stm32f0xx_hal.h"
 #include "plin_lin.h"
 #include "plin_protocol.h"
+#if PCAN_USB_STRESS
+#include "pcan_usb_dbg.h"
+#endif
 #include "pcan_usb.h"
 #include "pcan_timestamp.h"
 
@@ -155,37 +158,37 @@ static void lin_report( struct lin_channel *chan, uint8_t pid, uint8_t length,
                         const uint8_t *data )
 {
   uint8_t msg[PLIN_RX_MSG_SIZE] = { 0 };
-  uint32_t ts = pcan_timestamp_us();
-
-  (void)checksum;
+  uint8_t ch = (uint8_t)( chan - lin_channels );
 
   if( length > 8 )
     length = 8;
 
-  /* 36 字节线格式（USBPcap 实测）：
-   * +0 type, +1 seq(u16), +8 PID, +9 len, +10 dir, +11 checksum type,
-   * +16 error flags, +18 checksum(恒 0), +20 timestamp(u32 µs), +28 data[8] */
-  msg[0]  = 0;
+  /* Pro FD 24 字节紧凑报文（与 LIN_Write 同构）：
+   * +0 type=0x02, +1 seq(u16), +4 0x02, +5 device, +6 channel, +7 client,
+   * +8 PID, +9 len, +10 dir, +11 checksum type,
+   * +12 error flags(u16), +14 checksum, +16 data[8] */
+  msg[0]  = 0x02;
   msg[1]  = (uint8_t)( chan->sequence & 0xFF );
   msg[2]  = (uint8_t)( chan->sequence >> 8 );
   chan->sequence++;
+
+  msg[4]  = 0x02;
+  msg[5]  = plin_protocol_get_device_no();
+  msg[6]  = ch;
+  msg[7]  = plin_protocol_get_client_no();
 
   msg[8]  = pid;
   msg[9]  = length;
   msg[10] = direction;
   msg[11] = checksum_type;
-  msg[16] = (uint8_t)( error_flags & 0xFF );
-  msg[17] = (uint8_t)( error_flags >> 8 );
-  msg[18] = 0;
-  msg[20] = (uint8_t)( ts & 0xFF );
-  msg[21] = (uint8_t)( ( ts >> 8 ) & 0xFF );
-  msg[22] = (uint8_t)( ( ts >> 16 ) & 0xFF );
-  msg[23] = (uint8_t)( ( ts >> 24 ) & 0xFF );
+  msg[12] = (uint8_t)( error_flags & 0xFF );
+  msg[13] = (uint8_t)( error_flags >> 8 );
+  msg[14] = checksum;
 
   if( data )
-    memcpy( &msg[28], data, length );
+    memcpy( &msg[16], data, length );
 
-  plin_protocol_report_msg( (uint8_t)( chan - lin_channels ), msg, sizeof( msg ) );
+  plin_protocol_report_msg( ch, msg, sizeof( msg ) );
 }
 
 /* ---- 中断发送引擎 ------------------------------------------------------ */
@@ -203,10 +206,12 @@ static void lin_tx_start( struct lin_channel *chan, uint8_t with_break )
 
   if( with_break )
   {
-    /* 先发 break，等 TC 确认 break 完整送出后再灌数据 */
+    /* 先请求 LIN break，再立即开启 TXE 中断灌数据。
+     * F072 上若等 TC 确认 break，TC 可能一直不置位导致发送卡死；
+     * break 请求先于首个数据字节入队，硬件会先发 break 再发数据。 */
     usart->RQR = USART_RQR_SBKRQ;
-    chan->tx_break_wait = 1;
-    usart->CR1 |= USART_CR1_TCIE;
+    chan->tx_break_wait = 0;
+    usart->CR1 |= USART_CR1_TXEIE;
   }
   else
   {
@@ -284,7 +289,7 @@ static void lin_master_start( struct lin_channel *chan )
 {
   uint8_t channel = (uint8_t)( chan - lin_channels );
   uint8_t count = plin_protocol_get_slot_count( channel );
-  uint8_t slot[16];
+  uint8_t slot[PLIN_SLOT_SIZE];
   uint8_t entry[16];
   uint8_t id;
   uint16_t delay;
@@ -309,13 +314,20 @@ static void lin_master_start( struct lin_channel *chan )
     return;
   }
 
-  id = (uint8_t)( slot[4] & 0x3F );
-  delay = (uint16_t)( slot[2] | ( slot[3] << 8 ) );
+  id = (uint8_t)( slot[8] & 0x3F );
+  delay = (uint16_t)( slot[6] | ( slot[7] << 8 ) );
   if( delay < 4 )
     delay = 4;
 
   chan->slot_delay = delay;
   chan->slot_index = (uint8_t)( ( chan->slot_index + 1 ) % count );
+
+  /* 目前只处理无条件帧（type 0）；事件/零星槽先跳过 */
+  if( slot[4] != 0 )
+  {
+    chan->next_slot_ms = HAL_GetTick() + delay;
+    return;
+  }
 
   if( !plin_protocol_get_frame( channel, id, entry ) )
   {
@@ -357,7 +369,7 @@ static void lin_master_start( struct lin_channel *chan )
   if( direction == 1 && ( flags & 0x0001 ) )
   {
     /* 主机发布：报头 + 数据 + 校验和一次发完 */
-    memcpy( data, &entry[8], length );
+    memcpy( data, &entry[6], length );
     checksum = lin_checksum( id, pid, checksum_type, data, length );
 
     memcpy( &chan->tx_buf[2], data, length );
@@ -430,6 +442,10 @@ static void lin_master_poll( struct lin_channel *chan )
     return;
   }
 
+  /* 简单主机模式（无活动调度表）下只处理立即写，不启动周期槽 */
+  if( !chan->active )
+    return;
+
   if( (int32_t)( HAL_GetTick() - chan->next_slot_ms ) < 0 )
     return;
 
@@ -449,7 +465,7 @@ static void lin_slave_start_response( struct lin_channel *chan, uint8_t id,
   if( length > 8 )
     length = 8;
 
-  memcpy( chan->tx_buf, &entry[8], length );
+  memcpy( chan->tx_buf, &entry[6], length );
   checksum = lin_checksum( id, pid, checksum_type, chan->tx_buf, length );
   chan->tx_buf[length] = checksum;
 
@@ -507,13 +523,18 @@ static void lin_slave_poll( struct lin_channel *chan )
           if( length > 8 )
             length = 8;
 
-          if( entry[2] == 1 && ( flags & 0x0001 ) )
+          if( entry[2] == 1 )
           {
-            lin_slave_start_response( chan, id, entry );
-            return;
+            /* 发布帧：仅当 RESPONSE_ENABLE 置位时由从机发送应答 */
+            if( flags & 0x0001 )
+            {
+              lin_slave_start_response( chan, id, entry );
+              return;
+            }
           }
-          else if( entry[2] >= 2 )
+          else
           {
+            /* 订阅帧（含 AutoLength）：接收主机发来的数据并上报 */
             chan->rx_len = length;
             chan->parse_state = ( length > 0 ) ? LIN_PARSE_DATA : LIN_PARSE_CHECKSUM;
           }
@@ -714,6 +735,19 @@ void plin_lin_write( uint8_t channel, uint8_t pid, uint8_t length, uint8_t direc
 
 void plin_lin_poll( void )
 {
+#if PCAN_USB_STRESS
+  g_usb_dbg.lin_cr1[0] = lin_channels[0].usart->CR1;
+  g_usb_dbg.lin_isr[0] = lin_channels[0].usart->ISR;
+  g_usb_dbg.lin_brr[0] = lin_channels[0].usart->BRR;
+  g_usb_dbg.lin_cr2[0] = lin_channels[0].usart->CR2;
+  g_usb_dbg.lin_cr3[0] = lin_channels[0].usart->CR3;
+  g_usb_dbg.lin_cr1[1] = lin_channels[1].usart->CR1;
+  g_usb_dbg.lin_isr[1] = lin_channels[1].usart->ISR;
+  g_usb_dbg.lin_brr[1] = lin_channels[1].usart->BRR;
+  g_usb_dbg.lin_cr2[1] = lin_channels[1].usart->CR2;
+  g_usb_dbg.lin_cr3[1] = lin_channels[1].usart->CR3;
+  g_usb_dbg.lin_nvic = NVIC->ISER[0];
+#endif
   for( int i = 0; i < 2; i++ )
   {
     struct lin_channel *chan = &lin_channels[i];
@@ -721,6 +755,9 @@ void plin_lin_poll( void )
     if( chan->tx_done )
     {
       chan->tx_done = 0;
+#if PCAN_USB_STRESS
+      g_usb_dbg.lin_txd[i]++;
+#endif
 
       if( chan->phase == LIN_PHASE_TX )
       {
@@ -756,7 +793,8 @@ void plin_lin_poll( void )
       }
     }
 
-    if( chan->mode == PLIN_LIN_MODE_MASTER && chan->active )
+    if( chan->mode == PLIN_LIN_MODE_MASTER &&
+        ( chan->active || chan->txq_head != chan->txq_tail ) )
       lin_master_poll( chan );
     else if( chan->mode == PLIN_LIN_MODE_SLAVE )
       lin_slave_poll( chan );
@@ -772,6 +810,11 @@ static void lin_irq_handler( struct lin_channel *chan )
   USART_TypeDef *usart = chan->usart;
   uint32_t isr = usart->ISR;
   uint32_t cr1 = usart->CR1;
+  uint8_t ch = (uint8_t)( chan - lin_channels );
+
+#if PCAN_USB_STRESS
+  g_usb_dbg.lin_irq[ch]++;
+#endif
 
   if( isr & USART_ISR_LBDF )
   {
@@ -794,6 +837,9 @@ static void lin_irq_handler( struct lin_channel *chan )
 
   if( ( isr & USART_ISR_TXE ) && ( cr1 & USART_CR1_TXEIE ) )
   {
+#if PCAN_USB_STRESS
+    g_usb_dbg.lin_txe[ch]++;
+#endif
     if( chan->tx_pos < chan->tx_len )
     {
       usart->TDR = chan->tx_buf[chan->tx_pos++];
@@ -808,6 +854,9 @@ static void lin_irq_handler( struct lin_channel *chan )
   if( ( isr & USART_ISR_TC ) && ( cr1 & USART_CR1_TCIE ) )
   {
     usart->ICR = USART_ICR_TCCF;
+#if PCAN_USB_STRESS
+    g_usb_dbg.lin_tc[ch]++;
+#endif
 
     if( chan->tx_break_wait )
     {
