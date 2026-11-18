@@ -501,6 +501,8 @@ static uint8_t device_data_out( USBD_HandleTypeDef *pdev, uint8_t epnum )
 
 #if PCAN_USB_STRESS
   pcan_usb_dbg_out( epnum, peak_ep_out_buffer( epnum ), (uint16_t)size );
+  if( epnum == PCAN_USB_EP_MSGOUT || epnum == PCAN_USB_EP_MSG1OUT )
+    pcan_usb_dbg_can_out( epnum, peak_ep_out_buffer( epnum ), (uint16_t)size );
 #endif
 
   switch( epnum )

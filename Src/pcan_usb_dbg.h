@@ -39,6 +39,14 @@ struct pcan_usb_dbg_s
   volatile uint32_t lin_cr2[2];
   volatile uint32_t lin_cr3[2];
   volatile uint32_t lin_nvic;
+
+  /* CAN 数据 OUT 回调与解析记录（定位丢帧） */
+  volatile uint8_t  can_out_log[32][8];
+  volatile uint8_t  can_out_len[32];
+  volatile uint8_t  can_out_idx;
+  volatile uint8_t  can_rec_log[32][8];
+  volatile uint8_t  can_rec_size[32];
+  volatile uint8_t  can_rec_idx;
 };
 
 extern struct pcan_usb_dbg_s g_usb_dbg;
@@ -47,5 +55,7 @@ void pcan_usb_dbg_out( uint8_t ep, const uint8_t *data, uint16_t size );
 void pcan_usb_dbg_in( uint8_t ep );
 void pcan_usb_dbg_cmd( const uint8_t *data, uint16_t size );
 void pcan_usb_dbg_rsp( const uint8_t *data, uint16_t size );
+void pcan_usb_dbg_can_out( uint8_t ep, const uint8_t *data, uint16_t size );
+void pcan_usb_dbg_can_rec( const uint8_t *rec, uint16_t size );
 
 #endif

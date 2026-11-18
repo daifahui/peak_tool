@@ -441,6 +441,10 @@ static void ucan_process_tx_record( const uint8_t *rec, uint16_t size )
   uint16_t flags;
   uint32_t id;
 
+#if PCAN_USB_STRESS
+  pcan_usb_dbg_can_rec( rec, size );
+#endif
+
   if( size < 20u )
     return;
 
@@ -462,7 +466,8 @@ static void ucan_process_tx_record( const uint8_t *rec, uint16_t size )
     return;
   if( dlc > 8u )
     return;
-  if( (uint16_t)( 20u + dlc ) > size )
+  /* RTR 帧没有数据区，记录长度固定为 20（16 字节头 + 4 字节 ID） */
+  if( !( flags & UCAN_FLAG_RTR ) && (uint16_t)( 20u + dlc ) > size )
     return;
 
   memset( &msg, 0, sizeof( msg ) );
